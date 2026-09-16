@@ -56,3 +56,9 @@
     @apply bg-indigo-600;
   }
 }
+
+/* Toast progress bar shrink animation */
+@keyframes toast-shrink {
+  from { width: 100%; }
+  to   { width: 0%; }
+}

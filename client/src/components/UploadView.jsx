@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf } from 'lucide-react';
 
 export default function UploadView({ initialDateFolder, onUploadSuccess }) {
@@ -21,7 +22,22 @@ export default function UploadView({ initialDateFolder, onUploadSuccess }) {
   const [watAppend, setWatAppend] = useState(false);
   const [watUploading, setWatUploading] = useState(false);
 
-  const [notification, setNotification] = useState(null);
+  const [toast, setToast] = useState(null); // { type, text, visible }
+  const toastTimer = useRef(null);
+
+  const showToast = useCallback((type, text) => {
+    // Clear any existing timer
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ type, text, visible: true });
+    toastTimer.current = setTimeout(() => {
+      setToast(t => t ? { ...t, visible: false } : null);
+      setTimeout(() => setToast(null), 400); // wait for slide-out animation
+    }, 4000);
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+
   const rewriteFileRef = useRef(null);
   const freshFileRef = useRef(null);
   const watFileRef = useRef(null);
@@ -59,14 +75,9 @@ export default function UploadView({ initialDateFolder, onUploadSuccess }) {
     .map(w => w.trim().toUpperCase())
     .filter(w => w.length > 0);
 
-  const notify = (type, text) => {
-    setNotification({ type, text });
-    setTimeout(() => setNotification(null), 4000);
-  };
-
   const uploadTat = async (e) => {
     e.preventDefault();
-    if (!totalTatCount) { notify('error', 'Select at least one picture in either group.'); return; }
+    if (!totalTatCount) { showToast('error', 'Select at least one picture in either group.'); return; }
     setTatUploading(true);
     try {
       const fd = new FormData();
@@ -86,10 +97,10 @@ export default function UploadView({ initialDateFolder, onUploadSuccess }) {
       freshPreviews.forEach(p => URL.revokeObjectURL(p.url));
       setRewritePreviews([]);
       setFreshPreviews([]);
-      notify('success', `${totalTatCount} pictures saved to ${dateFolder}`);
+      showToast('success', `✅ ${totalTatCount} pictures saved to ${dateFolder}`);
       onUploadSuccess();
     } catch (err) {
-      notify('error', err.message);
+      showToast('error', err.message);
     } finally {
       setTatUploading(false);
     }
@@ -97,7 +108,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess }) {
 
   const uploadWat = async (e) => {
     e.preventDefault();
-    if (!watWords.length) { notify('error', 'Enter at least one word.'); return; }
+    if (!watWords.length) { showToast('error', 'Enter at least one word.'); return; }
     setWatUploading(true);
     try {
       const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder.trim())}/wat`, {
@@ -108,36 +119,87 @@ export default function UploadView({ initialDateFolder, onUploadSuccess }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setWatText('');
-      notify('success', `${watWords.length} words saved to ${dateFolder}`);
+      showToast('success', `✅ ${watWords.length} words saved to ${dateFolder}`);
       onUploadSuccess();
     } catch (err) {
-      notify('error', err.message);
+      showToast('error', err.message);
     } finally {
       setWatUploading(false);
     }
   };
 
-  return (
-    <div className="max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-5">
-
-      <h2 className="text-xl font-bold text-slate-800 dark:text-white">Upload Batch</h2>
-
-      {/* Notification */}
-      {notification && (
-        <div className={`flex items-center justify-between p-3 rounded-lg text-sm border ${
-          notification.type === 'success'
-            ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20 text-emerald-700 dark:text-emerald-400'
-            : 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20 text-red-700 dark:text-red-400'
-        }`}>
-          <div className="flex items-center gap-2">
-            {notification.type === 'success'
-              ? <CheckCircle2 className="w-4 h-4 shrink-0" />
-              : <AlertCircle className="w-4 h-4 shrink-0" />}
-            <span className="text-xs">{notification.text}</span>
+  // ── Floating toast portal ────────────────────────────────────────────────────
+  const toastEl = toast && createPortal(
+    <div
+      className={`fixed top-5 left-1/2 z-[200] -translate-x-1/2 w-[92vw] max-w-sm transition-all duration-400 ${
+        toast.visible
+          ? 'opacity-100 translate-y-0'
+          : 'opacity-0 -translate-y-4 pointer-events-none'
+      }`}
+      style={{ transition: 'opacity 0.35s ease, transform 0.35s ease' }}
+    >
+      <div className={`relative overflow-hidden rounded-2xl shadow-2xl border backdrop-blur-md ${
+        toast.type === 'success'
+          ? 'bg-emerald-50/95 dark:bg-emerald-950/95 border-emerald-300 dark:border-emerald-600'
+          : 'bg-red-50/95 dark:bg-red-950/95 border-red-300 dark:border-red-600'
+      }`}>
+        {/* Content */}
+        <div className="flex items-start gap-3 px-4 py-3.5">
+          <div className={`mt-0.5 shrink-0 rounded-full p-1 ${
+            toast.type === 'success'
+              ? 'bg-emerald-200 dark:bg-emerald-800 text-emerald-700 dark:text-emerald-300'
+              : 'bg-red-200 dark:bg-red-800 text-red-700 dark:text-red-300'
+          }`}>
+            {toast.type === 'success'
+              ? <CheckCircle2 className="w-4 h-4" />
+              : <AlertCircle className="w-4 h-4" />}
           </div>
-          <button onClick={() => setNotification(null)}><X className="w-3.5 h-3.5" /></button>
+          <div className="flex-1 min-w-0">
+            <p className={`text-sm font-semibold ${
+              toast.type === 'success'
+                ? 'text-emerald-800 dark:text-emerald-200'
+                : 'text-red-800 dark:text-red-200'
+            }`}>
+              {toast.type === 'success' ? 'Saved Successfully' : 'Upload Failed'}
+            </p>
+            <p className={`text-xs mt-0.5 leading-relaxed ${
+              toast.type === 'success'
+                ? 'text-emerald-700 dark:text-emerald-300'
+                : 'text-red-700 dark:text-red-300'
+            }`}>
+              {toast.text}
+            </p>
+          </div>
+          <button
+            onClick={() => { setToast(null); if (toastTimer.current) clearTimeout(toastTimer.current); }}
+            className={`shrink-0 p-1 rounded-lg transition-colors ${
+              toast.type === 'success'
+                ? 'text-emerald-500 hover:bg-emerald-200 dark:hover:bg-emerald-800'
+                : 'text-red-500 hover:bg-red-200 dark:hover:bg-red-800'
+            }`}
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
-      )}
+        {/* Progress bar */}
+        <div className={`h-1 ${
+          toast.type === 'success' ? 'bg-emerald-200 dark:bg-emerald-800' : 'bg-red-200 dark:bg-red-800'
+        }`}>
+          <div
+            className={`h-full ${
+              toast.type === 'success' ? 'bg-emerald-500' : 'bg-red-500'
+            }`}
+            style={{ animation: 'toast-shrink 4s linear forwards' }}
+          />
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+
+  return (
+    <>
+      {toastEl}
 
       {/* Date folder row */}
       <div className="card p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -373,6 +435,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess }) {
           </button>
         </form>
       )}
-    </div>
+      </div>
+    </>
   );
 }
