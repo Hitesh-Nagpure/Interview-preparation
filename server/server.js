@@ -14,17 +14,38 @@ const MONGO_URI =
   process.env.MONGODB_URI ||
   'mongodb+srv://hiteshnagpure111_db_user:r0Cqddijcl4kR4Kg@cluster0.zovb7m3.mongodb.net/ssb_psych_prep?appName=Cluster0';
 
-// Ensure uploads directory exists
+// ── Cloudinary setup (if env vars present) ────────────────────────────────────
+let cloudinaryUpload = null;
+const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
+const CLOUD_API_KEY = process.env.CLOUDINARY_API_KEY;
+const CLOUD_API_SECRET = process.env.CLOUDINARY_API_SECRET;
+
+if (CLOUD_NAME && CLOUD_API_KEY && CLOUD_API_SECRET) {
+  const cloudinary = require('cloudinary').v2;
+  const { CloudinaryStorage } = require('multer-storage-cloudinary');
+  cloudinary.config({ cloud_name: CLOUD_NAME, api_key: CLOUD_API_KEY, api_secret: CLOUD_API_SECRET });
+
+  const cloudStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: 'ssb-psych-prep/tat',
+      allowed_formats: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+      transformation: [{ quality: 'auto', fetch_format: 'auto' }]
+    }
+  });
+
+  cloudinaryUpload = multer({ storage: cloudStorage, limits: { fileSize: 25 * 1024 * 1024 } });
+  console.log('☁️  Cloudinary storage configured');
+}
+
+// ── Local disk fallback (for development) ────────────────────────────────────
 const uploadsDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Multer storage config for TAT images
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
+const diskStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
     const ext = path.extname(file.originalname) || '.jpg';
@@ -32,20 +53,20 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 25 * 1024 * 1024 } // 25MB per file
-});
+const diskUpload = multer({ storage: diskStorage, limits: { fileSize: 25 * 1024 * 1024 } });
 
-// Middleware
+// Active upload middleware: Cloudinary if configured, disk otherwise
+const upload = cloudinaryUpload || diskUpload;
+
+// ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Serve static uploaded files
+// Serve static uploaded files (local dev)
 app.use('/uploads', express.static(uploadsDir));
 
-// Connect to MongoDB Atlas
+// ── MongoDB ───────────────────────────────────────────────────────────────────
 let isConnected = false;
 mongoose
   .connect(MONGO_URI)
@@ -135,13 +156,14 @@ async function seedInitialDataIfEmpty() {
   }
 }
 
-// ---------------------- API ROUTES ---------------------- //
+// ─────────────────────── API ROUTES ──────────────────────────────────────────
 
 // 1. Health check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     dbConnected: mongoose.connection.readyState === 1,
+    storageMode: cloudinaryUpload ? 'cloudinary' : 'disk',
     time: new Date().toISOString()
   });
 });
@@ -218,7 +240,6 @@ app.post('/api/folders/:dateFolder/tat', upload.array('pictures', 50), async (re
     // Process uploaded files
     const newPics = [];
     if (req.files && req.files.length > 0) {
-      // pictureBatches is a JSON array mapping each file index to 'rewrite' or 'fresh'
       let batchMap = [];
       try {
         if (req.body.pictureBatches) {
@@ -227,10 +248,16 @@ app.post('/api/folders/:dateFolder/tat', upload.array('pictures', 50), async (re
       } catch (e) {
         console.warn('Could not parse pictureBatches:', e.message);
       }
+
       req.files.forEach((file, idx) => {
+        // Cloudinary returns file.path as the CDN URL; disk returns a local filename
+        const isCloudinary = !!(file.path && file.path.startsWith('http'));
+        const url = isCloudinary ? file.path : `/uploads/${file.filename}`;
+        const fileId = isCloudinary ? (file.filename || file.public_id || file.path) : file.filename;
+
         newPics.push({
-          id: file.filename,
-          url: `/uploads/${file.filename}`,
+          id: fileId,
+          url,
           originalName: file.originalname,
           size: file.size,
           batch: batchMap[idx] || 'fresh',
@@ -242,8 +269,8 @@ app.post('/api/folders/:dateFolder/tat', upload.array('pictures', 50), async (re
     // Support Base64 or external URLs in body (if provided)
     if (req.body.directImages) {
       try {
-        const directList = typeof req.body.directImages === 'string' 
-          ? JSON.parse(req.body.directImages) 
+        const directList = typeof req.body.directImages === 'string'
+          ? JSON.parse(req.body.directImages)
           : req.body.directImages;
         if (Array.isArray(directList)) {
           directList.forEach((item, idx) => {
@@ -310,7 +337,6 @@ app.post('/api/folders/:dateFolder/wat', async (req, res) => {
     if (Array.isArray(words)) {
       parsedWords = words;
     } else if (typeof words === 'string') {
-      // Split by commas, newlines, or tabs and trim
       parsedWords = words
         .split(/[\r\n,]+/)
         .map((w) => w.trim())
@@ -356,11 +382,7 @@ app.delete('/api/folders/:dateFolder', async (req, res) => {
         if (pic.url && pic.url.startsWith('/uploads/')) {
           const filePath = path.join(__dirname, '..', pic.url);
           if (fs.existsSync(filePath)) {
-            try {
-              fs.unlinkSync(filePath);
-            } catch (e) {
-              console.warn('File unlink error:', e.message);
-            }
+            try { fs.unlinkSync(filePath); } catch (e) { console.warn('File unlink error:', e.message); }
           }
         }
       });
@@ -388,11 +410,7 @@ app.delete('/api/folders/:dateFolder/tat', async (req, res) => {
         if (pic.url && pic.url.startsWith('/uploads/')) {
           const filePath = path.join(__dirname, '..', pic.url);
           if (fs.existsSync(filePath)) {
-            try {
-              fs.unlinkSync(filePath);
-            } catch (e) {
-              // ignore
-            }
+            try { fs.unlinkSync(filePath); } catch (e) { /* ignore */ }
           }
         }
       });
@@ -436,11 +454,7 @@ app.delete('/api/folders/:dateFolder/tat/:pictureId', async (req, res) => {
     if (pic && pic.url && pic.url.startsWith('/uploads/')) {
       const filePath = path.join(__dirname, '..', pic.url);
       if (fs.existsSync(filePath)) {
-        try {
-          fs.unlinkSync(filePath);
-        } catch (e) {
-          // ignore
-        }
+        try { fs.unlinkSync(filePath); } catch (e) { /* ignore */ }
       }
     }
 
