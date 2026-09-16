@@ -201,6 +201,8 @@ export default function UploadView({ initialDateFolder, onUploadSuccess }) {
     <>
       {toastEl}
 
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-5">
+
       {/* Date folder row */}
       <div className="card p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
