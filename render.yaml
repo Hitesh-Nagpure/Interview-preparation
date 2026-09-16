@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ssb-psych-prep
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: npm install && npm install --prefix client && npm run build --prefix client
+    startCommand: node server/server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
