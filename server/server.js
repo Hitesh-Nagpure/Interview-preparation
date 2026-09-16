@@ -220,7 +220,15 @@ app.get('/api/folders/:dateFolder', async (req, res) => {
 });
 
 // 4. Upload / Update TAT pictures in a Date Folder
-app.post('/api/folders/:dateFolder/tat', upload.array('pictures', 50), async (req, res) => {
+app.post('/api/folders/:dateFolder/tat', (req, res, next) => {
+  // Run multer manually so errors are caught as JSON (not HTML)
+  upload.array('pictures', 50)(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ error: `Upload error: ${err.message}` });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const { dateFolder } = req.params;
     const { title, hasBlankSlide, append, folderTitle } = req.body;
@@ -476,6 +484,13 @@ if (fs.existsSync(clientBuild)) {
     res.sendFile(path.join(clientBuild, 'index.html'));
   });
 }
+
+// Global JSON error handler — always returns JSON, never HTML
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err.message);
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+});
 
 // Start Server
 app.listen(PORT, () => {
