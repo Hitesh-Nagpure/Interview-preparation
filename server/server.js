@@ -29,8 +29,7 @@ if (CLOUD_NAME && CLOUD_API_KEY && CLOUD_API_SECRET) {
     cloudinary,
     params: {
       folder: 'ssb-psych-prep/tat',
-      allowed_formats: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-      transformation: [{ quality: 'auto', fetch_format: 'auto' }]
+      allowed_formats: ['jpg', 'jpeg', 'png', 'webp', 'gif']
     }
   });
 
