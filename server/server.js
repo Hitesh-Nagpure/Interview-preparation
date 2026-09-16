@@ -14,63 +14,60 @@ const MONGO_URI =
   process.env.MONGODB_URI ||
   'mongodb+srv://hiteshnagpure111_db_user:r0Cqddijcl4kR4Kg@cluster0.zovb7m3.mongodb.net/ssb_psych_prep?appName=Cluster0';
 
-// ── Cloudinary setup (if env vars present) ────────────────────────────────────
-let cloudinaryUpload = null;
+// ── Cloudinary setup (direct SDK — no multer-storage-cloudinary) ──────────────
 const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 const CLOUD_API_KEY = process.env.CLOUDINARY_API_KEY;
 const CLOUD_API_SECRET = process.env.CLOUDINARY_API_SECRET;
+let cloudinary = null;
 
 if (CLOUD_NAME && CLOUD_API_KEY && CLOUD_API_SECRET) {
-  const cloudinary = require('cloudinary').v2;
-  const { CloudinaryStorage } = require('multer-storage-cloudinary');
-  cloudinary.config({ cloud_name: CLOUD_NAME, api_key: CLOUD_API_KEY, api_secret: CLOUD_API_SECRET });
-
-  const cloudStorage = new CloudinaryStorage({
-    cloudinary,
-    params: {
-      folder: 'ssb-psych-prep/tat',
-      allowed_formats: ['jpg', 'jpeg', 'png', 'webp', 'gif']
-    }
+  cloudinary = require('cloudinary').v2;
+  cloudinary.config({
+    cloud_name: CLOUD_NAME,
+    api_key: CLOUD_API_KEY,
+    api_secret: CLOUD_API_SECRET
   });
-
-  cloudinaryUpload = multer({ storage: cloudStorage, limits: { fileSize: 25 * 1024 * 1024 } });
-  console.log('☁️  Cloudinary storage configured');
+  console.log('☁️  Cloudinary configured — uploads will use CDN');
 }
 
-// ── Local disk fallback (for development) ────────────────────────────────────
+// Helper: upload a buffer to Cloudinary, returns the secure_url
+function uploadBufferToCloudinary(buffer, originalname) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder: 'ssb-psych-prep/tat', resource_type: 'image' },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+    stream.end(buffer);
+  });
+}
+
+// ── Multer — always use memory storage; we decide where to put files after ────
+const memoryUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB per file
+});
+
+// ── Local disk fallback (for development without Cloudinary) ──────────────────
 const uploadsDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
-
-const diskStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname) || '.jpg';
-    cb(null, 'tat-' + uniqueSuffix + ext);
-  }
-});
-
-const diskUpload = multer({ storage: diskStorage, limits: { fileSize: 25 * 1024 * 1024 } });
-
-// Active upload middleware: Cloudinary if configured, disk otherwise
-const upload = cloudinaryUpload || diskUpload;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Serve static uploaded files (local dev)
+// Serve static uploaded files (local dev only)
 app.use('/uploads', express.static(uploadsDir));
 
 // ── MongoDB ───────────────────────────────────────────────────────────────────
-let isConnected = false;
 mongoose
   .connect(MONGO_URI)
   .then(() => {
-    isConnected = true;
     console.log('✅ Connected to MongoDB Atlas: ssb_psych_prep');
     seedInitialDataIfEmpty();
   })
@@ -83,7 +80,7 @@ async function seedInitialDataIfEmpty() {
   try {
     const count = await DateFolder.countDocuments();
     if (count === 0) {
-      console.log('Seeding initial practice batch for demonstration...');
+      console.log('Seeding initial practice batch...');
       const today = new Date().toISOString().split('T')[0];
 
       const sampleWords = [
@@ -101,7 +98,6 @@ async function seedInitialDataIfEmpty() {
         'SINCERE', 'TRUTH', 'TIME', 'TARGET', 'GOAL'
       ];
 
-      // Sample TAT pictures using clean, high-contrast SVG placeholders representing SSB scenes
       const samplePictures = [
         {
           id: 'tat-seed-1',
@@ -136,19 +132,10 @@ async function seedInitialDataIfEmpty() {
       await DateFolder.create({
         dateFolder: today,
         folderTitle: 'Official SSB Standard Practice Set',
-        tat: {
-          title: 'SSB Standard TAT Set Alpha',
-          pictures: samplePictures,
-          hasBlankSlide: true,
-          updatedAt: new Date()
-        },
-        wat: {
-          title: 'SSB Standard 60 WAT Words Alpha',
-          words: sampleWords,
-          updatedAt: new Date()
-        }
+        tat: { title: 'SSB Standard TAT Set Alpha', pictures: samplePictures, hasBlankSlide: true, updatedAt: new Date() },
+        wat: { title: 'SSB Standard 60 WAT Words Alpha', words: sampleWords, updatedAt: new Date() }
       });
-      console.log('✅ Default SSB practice batch seeded successfully!');
+      console.log('✅ Default SSB practice batch seeded!');
     }
   } catch (seedErr) {
     console.warn('Seed notice:', seedErr.message);
@@ -162,12 +149,12 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     dbConnected: mongoose.connection.readyState === 1,
-    storageMode: cloudinaryUpload ? 'cloudinary' : 'disk',
+    storageMode: cloudinary ? 'cloudinary' : 'disk',
     time: new Date().toISOString()
   });
 });
 
-// 2. Get all Date Folders (with summary counts)
+// 2. Get all Date Folders
 app.get('/api/folders', async (req, res) => {
   try {
     const folders = await DateFolder.find().sort({ dateFolder: -1 });
@@ -204,125 +191,129 @@ app.get('/api/folders', async (req, res) => {
   }
 });
 
-// 3. Get single Date Folder with full pictures & words
+// 3. Get single Date Folder with full data
 app.get('/api/folders/:dateFolder', async (req, res) => {
   try {
-    const { dateFolder } = req.params;
-    const folder = await DateFolder.findOne({ dateFolder });
-    if (!folder) {
-      return res.status(404).json({ error: `No folder found for date ${dateFolder}` });
-    }
+    const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
+    if (!folder) return res.status(404).json({ error: `No folder found for date ${req.params.dateFolder}` });
     res.json(folder);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 4. Upload / Update TAT pictures in a Date Folder
-app.post('/api/folders/:dateFolder/tat', (req, res, next) => {
-  // Run multer manually so errors are caught as JSON (not HTML)
-  upload.array('pictures', 50)(req, res, (err) => {
-    if (err) {
-      return res.status(400).json({ error: `Upload error: ${err.message}` });
-    }
-    next();
-  });
-}, async (req, res) => {
-  try {
-    const { dateFolder } = req.params;
-    const { title, hasBlankSlide, append, folderTitle } = req.body;
+// 4. Upload / Update TAT pictures — memory storage + Cloudinary SDK or disk
+app.post('/api/folders/:dateFolder/tat',
+  // Step 1: receive files into memory (catches multer errors as JSON)
+  (req, res, next) => {
+    memoryUpload.array('pictures', 50)(req, res, (err) => {
+      if (err) return res.status(400).json({ error: `Upload error: ${err.message}` });
+      next();
+    });
+  },
+  // Step 2: persist files (Cloudinary or disk) then save to DB
+  async (req, res) => {
+    try {
+      const { dateFolder } = req.params;
+      const { title, hasBlankSlide, append, folderTitle } = req.body;
 
-    let folder = await DateFolder.findOne({ dateFolder });
-    if (!folder) {
-      folder = new DateFolder({
-        dateFolder,
-        folderTitle: folderTitle || `Batch ${dateFolder}`,
-        tat: { pictures: [] },
-        wat: { words: [] }
-      });
-    } else if (folderTitle) {
-      folder.folderTitle = folderTitle;
-    }
+      let folder = await DateFolder.findOne({ dateFolder });
+      if (!folder) {
+        folder = new DateFolder({
+          dateFolder,
+          folderTitle: folderTitle || `Batch ${dateFolder}`,
+          tat: { pictures: [] },
+          wat: { words: [] }
+        });
+      } else if (folderTitle) {
+        folder.folderTitle = folderTitle;
+      }
 
-    // Process uploaded files
-    const newPics = [];
-    if (req.files && req.files.length > 0) {
+      // Parse batch map
       let batchMap = [];
       try {
-        if (req.body.pictureBatches) {
-          batchMap = JSON.parse(req.body.pictureBatches);
-        }
-      } catch (e) {
-        console.warn('Could not parse pictureBatches:', e.message);
-      }
+        if (req.body.pictureBatches) batchMap = JSON.parse(req.body.pictureBatches);
+      } catch (e) { /* ignore */ }
 
-      req.files.forEach((file, idx) => {
-        // Cloudinary returns file.path as the CDN URL; disk returns a local filename
-        const isCloudinary = !!(file.path && file.path.startsWith('http'));
-        const url = isCloudinary ? file.path : `/uploads/${file.filename}`;
-        const fileId = isCloudinary ? (file.filename || file.public_id || file.path) : file.filename;
+      // Upload each file
+      const newPics = [];
+      if (req.files && req.files.length > 0) {
+        for (let idx = 0; idx < req.files.length; idx++) {
+          const file = req.files[idx];
+          let url, fileId;
 
-        newPics.push({
-          id: fileId,
-          url,
-          originalName: file.originalname,
-          size: file.size,
-          batch: batchMap[idx] || 'fresh',
-          uploadedAt: new Date()
-        });
-      });
-    }
+          if (cloudinary) {
+            // Upload buffer directly to Cloudinary — official SDK, no signature issues
+            const result = await uploadBufferToCloudinary(file.buffer, file.originalname);
+            url = result.secure_url;
+            fileId = result.public_id;
+          } else {
+            // Disk fallback for local development
+            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+            const ext = path.extname(file.originalname) || '.jpg';
+            const filename = 'tat-' + uniqueSuffix + ext;
+            fs.writeFileSync(path.join(uploadsDir, filename), file.buffer);
+            url = `/uploads/${filename}`;
+            fileId = filename;
+          }
 
-    // Support Base64 or external URLs in body (if provided)
-    if (req.body.directImages) {
-      try {
-        const directList = typeof req.body.directImages === 'string'
-          ? JSON.parse(req.body.directImages)
-          : req.body.directImages;
-        if (Array.isArray(directList)) {
-          directList.forEach((item, idx) => {
-            newPics.push({
-              id: 'direct-' + Date.now() + '-' + idx,
-              url: item.url || item,
-              originalName: item.name || `Picture ${idx + 1}`,
-              size: item.size || 0,
-              uploadedAt: new Date()
-            });
+          newPics.push({
+            id: fileId,
+            url,
+            originalName: file.originalname,
+            size: file.size,
+            batch: batchMap[idx] || 'fresh',
+            uploadedAt: new Date()
           });
         }
-      } catch (parseErr) {
-        console.warn('Error parsing directImages:', parseErr.message);
       }
-    }
 
-    if (!folder.tat) {
-      folder.tat = { pictures: [] };
-    }
+      // Support external URL list in body
+      if (req.body.directImages) {
+        try {
+          const directList = typeof req.body.directImages === 'string'
+            ? JSON.parse(req.body.directImages) : req.body.directImages;
+          if (Array.isArray(directList)) {
+            directList.forEach((item, idx) => {
+              newPics.push({
+                id: 'direct-' + Date.now() + '-' + idx,
+                url: item.url || item,
+                originalName: item.name || `Picture ${idx + 1}`,
+                size: item.size || 0,
+                uploadedAt: new Date()
+              });
+            });
+          }
+        } catch (e) { /* ignore */ }
+      }
 
-    if (append === 'true' || append === true) {
-      folder.tat.pictures = [...folder.tat.pictures, ...newPics];
-    } else {
-      folder.tat.pictures = newPics.length > 0 ? newPics : folder.tat.pictures;
-    }
+      if (!folder.tat) folder.tat = { pictures: [] };
 
-    if (title) folder.tat.title = title;
-    if (typeof hasBlankSlide !== 'undefined') {
-      folder.tat.hasBlankSlide = hasBlankSlide === 'true' || hasBlankSlide === true;
-    }
-    folder.tat.updatedAt = new Date();
+      if (append === 'true' || append === true) {
+        folder.tat.pictures = [...folder.tat.pictures, ...newPics];
+      } else {
+        folder.tat.pictures = newPics.length > 0 ? newPics : folder.tat.pictures;
+      }
 
-    await folder.save();
-    res.json({
-      success: true,
-      message: `TAT set updated with ${folder.tat.pictures.length} pictures.`,
-      folder
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+      if (title) folder.tat.title = title;
+      if (typeof hasBlankSlide !== 'undefined') {
+        folder.tat.hasBlankSlide = hasBlankSlide === 'true' || hasBlankSlide === true;
+      }
+      folder.tat.updatedAt = new Date();
+
+      await folder.save();
+      res.json({
+        success: true,
+        message: `TAT set updated with ${folder.tat.pictures.length} pictures.`,
+        folder
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   }
-});
+);
 
-// 5. Upload / Update WAT words in a Date Folder
+// 5. Upload / Update WAT words
 app.post('/api/folders/:dateFolder/wat', async (req, res) => {
   try {
     const { dateFolder } = req.params;
@@ -344,15 +335,10 @@ app.post('/api/folders/:dateFolder/wat', async (req, res) => {
     if (Array.isArray(words)) {
       parsedWords = words;
     } else if (typeof words === 'string') {
-      parsedWords = words
-        .split(/[\r\n,]+/)
-        .map((w) => w.trim())
-        .filter((w) => w.length > 0);
+      parsedWords = words.split(/[\r\n,]+/).map(w => w.trim()).filter(w => w.length > 0);
     }
 
-    if (!folder.wat) {
-      folder.wat = { words: [] };
-    }
+    if (!folder.wat) folder.wat = { words: [] };
 
     if (append === true || append === 'true') {
       folder.wat.words = [...folder.wat.words, ...parsedWords];
@@ -364,11 +350,7 @@ app.post('/api/folders/:dateFolder/wat', async (req, res) => {
     folder.wat.updatedAt = new Date();
 
     await folder.save();
-    res.json({
-      success: true,
-      message: `WAT set updated with ${folder.wat.words.length} words.`,
-      folder
-    });
+    res.json({ success: true, message: `WAT set updated with ${folder.wat.words.length} words.`, folder });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -377,72 +359,52 @@ app.post('/api/folders/:dateFolder/wat', async (req, res) => {
 // 6. DELETE entire Date Folder
 app.delete('/api/folders/:dateFolder', async (req, res) => {
   try {
-    const { dateFolder } = req.params;
-    const folder = await DateFolder.findOne({ dateFolder });
-    if (!folder) {
-      return res.status(404).json({ error: 'Folder not found' });
-    }
+    const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
 
-    // Clean up local uploaded files if any
+    // Clean up files
     if (folder.tat && folder.tat.pictures) {
-      folder.tat.pictures.forEach((pic) => {
-        if (pic.url && pic.url.startsWith('/uploads/')) {
-          const filePath = path.join(__dirname, '..', pic.url);
-          if (fs.existsSync(filePath)) {
-            try { fs.unlinkSync(filePath); } catch (e) { console.warn('File unlink error:', e.message); }
-          }
-        }
-      });
+      for (const pic of folder.tat.pictures) {
+        await deleteStoredFile(pic.url, pic.id);
+      }
     }
 
-    await DateFolder.deleteOne({ dateFolder });
-    res.json({ success: true, message: `Date folder ${dateFolder} deleted successfully` });
+    await DateFolder.deleteOne({ dateFolder: req.params.dateFolder });
+    res.json({ success: true, message: `Date folder ${req.params.dateFolder} deleted` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 7. DELETE only TAT batch from a Date Folder
+// 7. DELETE only TAT batch
 app.delete('/api/folders/:dateFolder/tat', async (req, res) => {
   try {
-    const { dateFolder } = req.params;
-    const folder = await DateFolder.findOne({ dateFolder });
-    if (!folder) {
-      return res.status(404).json({ error: 'Folder not found' });
-    }
+    const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
 
-    // Delete local files
     if (folder.tat && folder.tat.pictures) {
-      folder.tat.pictures.forEach((pic) => {
-        if (pic.url && pic.url.startsWith('/uploads/')) {
-          const filePath = path.join(__dirname, '..', pic.url);
-          if (fs.existsSync(filePath)) {
-            try { fs.unlinkSync(filePath); } catch (e) { /* ignore */ }
-          }
-        }
-      });
+      for (const pic of folder.tat.pictures) {
+        await deleteStoredFile(pic.url, pic.id);
+      }
     }
 
     folder.tat = { title: 'TAT Set', pictures: [], hasBlankSlide: true };
     await folder.save();
-    res.json({ success: true, message: 'TAT batch removed from folder', folder });
+    res.json({ success: true, message: 'TAT batch removed', folder });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 8. DELETE only WAT batch from a Date Folder
+// 8. DELETE only WAT batch
 app.delete('/api/folders/:dateFolder/wat', async (req, res) => {
   try {
-    const { dateFolder } = req.params;
-    const folder = await DateFolder.findOne({ dateFolder });
-    if (!folder) {
-      return res.status(404).json({ error: 'Folder not found' });
-    }
+    const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
 
     folder.wat = { title: 'WAT Set', words: [] };
     await folder.save();
-    res.json({ success: true, message: 'WAT batch removed from folder', folder });
+    res.json({ success: true, message: 'WAT batch removed', folder });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -457,16 +419,11 @@ app.delete('/api/folders/:dateFolder/tat/:pictureId', async (req, res) => {
       return res.status(404).json({ error: 'Folder or TAT set not found' });
     }
 
-    const pic = folder.tat.pictures.find((p) => p.id === pictureId || p._id.toString() === pictureId);
-    if (pic && pic.url && pic.url.startsWith('/uploads/')) {
-      const filePath = path.join(__dirname, '..', pic.url);
-      if (fs.existsSync(filePath)) {
-        try { fs.unlinkSync(filePath); } catch (e) { /* ignore */ }
-      }
-    }
+    const pic = folder.tat.pictures.find(p => p.id === pictureId || p._id?.toString() === pictureId);
+    if (pic) await deleteStoredFile(pic.url, pic.id);
 
     folder.tat.pictures = folder.tat.pictures.filter(
-      (p) => p.id !== pictureId && p._id.toString() !== pictureId
+      p => p.id !== pictureId && p._id?.toString() !== pictureId
     );
     await folder.save();
     res.json({ success: true, message: 'Picture deleted', folder });
@@ -475,16 +432,32 @@ app.delete('/api/folders/:dateFolder/tat/:pictureId', async (req, res) => {
   }
 });
 
-// Serve frontend in production (if built)
+// ── Helper: delete a file from Cloudinary or local disk ──────────────────────
+async function deleteStoredFile(url, publicId) {
+  try {
+    if (cloudinary && url && url.startsWith('http')) {
+      // Cloudinary — publicId is stored in the `id` field
+      if (publicId) await cloudinary.uploader.destroy(publicId);
+    } else if (url && url.startsWith('/uploads/')) {
+      const filePath = path.join(__dirname, '..', url);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+  } catch (e) {
+    console.warn('Could not delete file:', e.message);
+  }
+}
+
+// ── Serve React frontend in production ────────────────────────────────────────
 const clientBuild = path.join(__dirname, '../client/dist');
 if (fs.existsSync(clientBuild)) {
   app.use(express.static(clientBuild));
-  app.get('*', (req, res) => {
+  // SPA fallback — must be LAST, only for non-API routes
+  app.get(/^(?!\/api).*/, (req, res) => {
     res.sendFile(path.join(clientBuild, 'index.html'));
   });
 }
 
-// Global JSON error handler — always returns JSON, never HTML
+// ── Global JSON error handler — never returns HTML ────────────────────────────
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err.message);
