@@ -11,8 +11,7 @@ const PORT = process.env.PORT || 5000;
 
 // MongoDB Connection URI
 const MONGO_URI =
-  process.env.MONGODB_URI ||
-  'mongodb+srv://hiteshnagpure111_db_user:r0Cqddijcl4kR4Kg@cluster0.zovb7m3.mongodb.net/ssb_psych_prep?appName=Cluster0';
+  process.env.MONGODB_URI;
 
 // ── Cloudinary setup (direct SDK — no multer-storage-cloudinary) ──────────────
 const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
