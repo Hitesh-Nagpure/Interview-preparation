@@ -99,13 +99,16 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
         setTimeLeft(dur); setTotalPhaseDuration(dur);
         soundEngine.playTransitionChime();
       } else {
+        // Play chime upon completion of writing time (for both regular and last blank/non-blank slide)
+        soundEngine.playTransitionChime();
         if (currentIndex + 1 < items.length) {
           setCurrentIndex(i => i + 1);
           setTatPhase('OBSERVE');
           const dur = Math.round(30 / speedMultiplier);
           setTimeLeft(dur); setTotalPhaseDuration(dur);
-          soundEngine.playTransitionChime();
-        } else { finishTest(); }
+        } else {
+          finishTest();
+        }
       }
     } else {
       if (currentIndex + 1 < items.length) {
@@ -125,13 +128,16 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
         setTimeLeft(dur); setTotalPhaseDuration(dur);
         soundEngine.playTransitionChime();
       } else {
+        // Play chime upon completion of writing time (for both regular and last blank/non-blank slide)
+        soundEngine.playTransitionChime();
         if (currentIndex + 1 < items.length) {
           setCurrentIndex(i => i + 1);
           setTatPhase('OBSERVE');
           const dur = Math.round(30 / speedMultiplier);
           setTimeLeft(dur); setTotalPhaseDuration(dur);
-          soundEngine.playTransitionChime();
-        } else { finishTest(); }
+        } else {
+          finishTest();
+        }
       }
     } else {
       if (currentIndex + 1 < items.length) {
@@ -154,7 +160,13 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
       return;
     }
     setStatus('COMPLETED');
-    soundEngine.playCompletionChime();
+    if (testType === 'TAT') {
+      setTimeout(() => {
+        soundEngine.playCompletionChime();
+      }, 700);
+    } else {
+      soundEngine.playCompletionChime();
+    }
   };
 
   const toggleFullscreen = () => {
