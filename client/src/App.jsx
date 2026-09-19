@@ -163,6 +163,7 @@ export default function App() {
               <UploadView
                 initialDateFolder={initialUploadDate}
                 onUploadSuccess={() => { fetchFolders(); setActiveTab('folders'); }}
+                onRefresh={fetchFolders}
                 onNavigate={handleNavigate}
               />
             )}

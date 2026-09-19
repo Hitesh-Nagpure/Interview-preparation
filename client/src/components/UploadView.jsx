@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf } from 'lucide-react';
 
-export default function UploadView({ initialDateFolder, onUploadSuccess }) {
+export default function UploadView({ initialDateFolder, onUploadSuccess, onRefresh }) {
   const today = new Date().toISOString().split('T')[0];
   const [dateFolder, setDateFolder] = useState(initialDateFolder || today);
   const [folderTitle, setFolderTitle] = useState('');
@@ -97,8 +97,9 @@ export default function UploadView({ initialDateFolder, onUploadSuccess }) {
       freshPreviews.forEach(p => URL.revokeObjectURL(p.url));
       setRewritePreviews([]);
       setFreshPreviews([]);
-      showToast('success', `✅ ${totalTatCount} pictures saved to ${dateFolder}`);
-      onUploadSuccess();
+      showToast('success', `✅ ${totalTatCount} pictures saved to ${dateFolder}. Switching to WAT...`);
+      if (onRefresh) onRefresh();
+      setTab('wat');
     } catch (err) {
       showToast('error', err.message);
     } finally {
