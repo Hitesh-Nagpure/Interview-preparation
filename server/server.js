@@ -220,6 +220,7 @@ app.get('/api/folders', async (req, res) => {
         title: l.title,
         duration: l.duration,
         url: l.url,
+        recordedDate: l.recordedDate || f.dateFolder,
         recordedAt: l.recordedAt
       }))
     }));
@@ -806,6 +807,7 @@ app.post('/api/folders/:dateFolder/lecturette',
       const newLecturette = {
         id: 'lec-' + Date.now(),
         title: title || `Lecturette ${dateFolder}`,
+        recordedDate: req.body.recordedDate || dateFolder,
         duration: Number(duration) || 0,
         url,
         publicId: fileId,
@@ -840,6 +842,55 @@ app.delete('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res)
     );
     await folder.save();
     res.json({ success: true, message: 'Lecturette video deleted', folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 16. PATCH lecturette — edit title / date
+app.patch('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res) => {
+  try {
+    const { dateFolder, lecturetteId } = req.params;
+    const { title, recordedDate } = req.body;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const lecIndex = (folder.lecturettes || []).findIndex(
+      l => l.id === lecturetteId || l._id?.toString() === lecturetteId
+    );
+    if (lecIndex === -1) return res.status(404).json({ error: 'Lecturette not found' });
+
+    const lec = folder.lecturettes[lecIndex];
+    if (title !== undefined) lec.title = title;
+
+    if (recordedDate && recordedDate !== dateFolder) {
+      let targetFolder = await DateFolder.findOne({ dateFolder: recordedDate });
+      if (!targetFolder) {
+        targetFolder = new DateFolder({
+          dateFolder: recordedDate,
+          tat: { pictures: [] },
+          wat: { words: [] },
+          solutions: [],
+          lecturettes: []
+        });
+      }
+      lec.recordedDate = recordedDate;
+      folder.lecturettes.splice(lecIndex, 1);
+      folder.markModified('lecturettes');
+      await folder.save();
+
+      if (!targetFolder.lecturettes) targetFolder.lecturettes = [];
+      targetFolder.lecturettes.unshift(lec);
+      targetFolder.markModified('lecturettes');
+      await targetFolder.save();
+
+      return res.json({ success: true, lecturette: lec, movedTo: recordedDate });
+    } else {
+      if (recordedDate !== undefined) lec.recordedDate = recordedDate;
+      folder.markModified('lecturettes');
+      await folder.save();
+      return res.json({ success: true, lecturette: lec });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

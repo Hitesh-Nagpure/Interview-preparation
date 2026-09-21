@@ -238,7 +238,13 @@ export default function PdfViewerModal({
                   type="file"
                   accept="application/pdf"
                   className="hidden"
-                  onChange={e => setReplacementFile(e.target.files?.[0] || null)}
+                  onChange={e => {
+                    const f = e.target.files?.[0] || null;
+                    setReplacementFile(f);
+                    if (f) {
+                      setTitle(f.name.replace(/\.[^/.]+$/, ''));
+                    }
+                  }}
                 />
               </label>
               <button

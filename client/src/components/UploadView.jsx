@@ -86,8 +86,9 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
       const fd = new FormData();
       fd.append('file', solFile);
       const chosenDate = solDate || dateFolder || today;
+      const defaultTitle = solFile ? solFile.name.replace(/\.[^/.]+$/, '') : chosenDate;
       fd.append('solutionDate', chosenDate);
-      fd.append('title', solTitle || chosenDate);
+      fd.append('title', solTitle || defaultTitle);
       fd.append('testType', solTestType);
 
       const targetFolder = (dateFolder || chosenDate).trim();
@@ -98,7 +99,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to upload solution PDF');
 
-      showToast('success', `Solution PDF "${solTitle || chosenDate}" uploaded to batch ${targetFolder}.`);
+      showToast('success', `Solution PDF "${solTitle || defaultTitle}" uploaded to batch ${targetFolder}.`);
       setSolFile(null);
       if (solFileRef.current) solFileRef.current.value = '';
       if (onRefresh) onRefresh();
@@ -591,12 +592,12 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
               </select>
             </div>
             <div>
-              <label className="label">Document Title</label>
+              <label className="label">Custom Label / Title</label>
               <input
                 type="text"
                 value={solTitle}
                 onChange={e => setSolTitle(e.target.value)}
-                placeholder={solDate || 'e.g. 2026-09-21 Solution'}
+                placeholder="Custom label (defaults to PDF filename)"
                 className="input"
               />
             </div>
@@ -611,7 +612,12 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
               accept="application/pdf,.pdf"
               className="hidden"
               onChange={e => {
-                if (e.target.files?.[0]) setSolFile(e.target.files[0]);
+                if (e.target.files?.[0]) {
+                  const file = e.target.files[0];
+                  setSolFile(file);
+                  const nameWithoutExt = file.name.replace(/\.[^/.]+$/, '');
+                  setSolTitle(nameWithoutExt);
+                }
               }}
             />
             {!solFile ? (

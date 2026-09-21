@@ -4,7 +4,7 @@ import {
   Folder, Play, Trash2, Eye, EyeOff, Plus, Search, X,
   ChevronDown, ChevronUp, AlertTriangle, Layers, ZoomIn,
   RotateCcw, Leaf, ChevronLeft, ChevronRight, FileText, Video,
-  Upload, Edit3, Download, Calendar
+  Upload, Edit3, Download, Calendar, Check, Image as ImageIcon, AlignLeft
 } from 'lucide-react';
 import PdfViewerModal from './PdfViewerModal';
 import CustomVideoPlayer from './CustomVideoPlayer';
@@ -101,6 +101,35 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
     }
   };
 
+  // Per-folder active tab: 'tat' | 'wat' | 'solutions' | 'lecturette'
+  const [folderTabs, setFolderTabs] = useState({});
+  const getFolderTab = (df) => folderTabs[df] || 'tat';
+  const setFolderTab = (df, tab) => setFolderTabs(p => ({ ...p, [df]: tab }));
+
+  // Lecturette inline edit state
+  const [editingLecturette, setEditingLecturette] = useState(null); // { id, dateFolder, title, recordedDate }
+  const [lecEditSaving, setLecEditSaving] = useState(false);
+
+  const handleSaveLecturetteEdit = async () => {
+    if (!editingLecturette) return;
+    setLecEditSaving(true);
+    try {
+      const { id, dateFolder, title, recordedDate } = editingLecturette;
+      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/lecturette/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, recordedDate })
+      });
+      if (!res.ok) throw new Error('Failed to save');
+      setEditingLecturette(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLecEditSaving(false);
+    }
+  };
+
   const filtered = folders.filter(f => {
     const q = search.toLowerCase();
     return f.dateFolder.includes(q) || (f.folderTitle || '').toLowerCase().includes(q);
@@ -151,21 +180,33 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
             <div key={folder.dateFolder} className="card overflow-hidden">
 
               {/* Folder header */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-dark-600">
+              <div className="flex items-center justify-between px-3 sm:px-4 py-3 border-b border-slate-100 dark:border-dark-600">
                 <button
                   onClick={() => toggle(folder.dateFolder)}
-                  className="flex items-center gap-2.5 text-left"
+                  className="flex items-center gap-2 text-left min-w-0 flex-1"
                 >
-                  {open ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
-                  <span className="font-bold text-slate-800 dark:text-white font-mono text-sm">{folder.dateFolder}</span>
-                  {folder.folderTitle && (
-                    <span className="text-xs text-slate-400">· {folder.folderTitle}</span>
-                  )}
+                  {open ? <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />}
+                  <div className="min-w-0">
+                    <span className="font-bold text-slate-800 dark:text-white font-mono text-sm">{folder.dateFolder}</span>
+                    {folder.folderTitle && (
+                      <span className="text-xs text-slate-400 ml-1.5 hidden sm:inline">· {folder.folderTitle}</span>
+                    )}
+                  </div>
                 </button>
 
-                <div className="flex items-center gap-1.5">
-                  <span className="badge-indigo">{tatCount} TAT</span>
-                  <span className="badge-cyan">{watCount} WAT</span>
+                <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 ml-2">
+                  {tatCount > 0 && <span className="badge-indigo text-[10px] px-1.5">{tatCount} TAT</span>}
+                  {watCount > 0 && <span className="badge-cyan text-[10px] px-1.5">{watCount} WAT</span>}
+                  {(folder.solutions?.length || 0) > 0 && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hidden xs:inline-flex">
+                      {folder.solutions.length} Sol
+                    </span>
+                  )}
+                  {(folder.lecturettes?.length || 0) > 0 && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 hidden xs:inline-flex">
+                      {folder.lecturettes.length} Lec
+                    </span>
+                  )}
                   <button
                     onClick={() => onNavigate('upload', folder.dateFolder)}
                     className="p-1.5 rounded text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors"
@@ -183,302 +224,342 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                 </div>
               </div>
 
-              {/* Expanded: TAT + WAT side-by-side */}
-              {open && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-slate-100 dark:divide-dark-600">
+              {/* Expanded: Tab-based navigation */}
+              {open && (() => {
+                const activeTab = getFolderTab(folder.dateFolder);
+                const solCount = folder.solutions?.length || 0;
+                const lecCount = folder.lecturettes?.length || 0;
 
-                  {/* TAT */}
-                  <div className="p-4 flex flex-col justify-between h-full space-y-3">
-                    <div className="space-y-3 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xl sm:text-2xl font-black text-indigo-600 dark:text-indigo-400 font-mono tracking-wider">
-                            TAT
-                          </span>
-                          <span className="text-xs text-slate-500 dark:text-slate-400 font-semibold">
-                            · {tatCount} pics
-                          </span>
-                          {folder.tat?.rewriteCount > 0 && (
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20" title="Rewrite batch count">
-                              {folder.tat.rewriteCount} Rewrite
-                            </span>
-                          )}
-                          {folder.tat?.freshCount > 0 && (
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20" title="Fresh batch count">
-                              {folder.tat.freshCount} Fresh
-                            </span>
-                          )}
-                        </div>
+                const tabs = [
+                  { id: 'tat', label: 'TAT', icon: ImageIcon, color: 'indigo', count: tatCount },
+                  { id: 'wat', label: 'WAT', icon: AlignLeft, color: 'cyan', count: watCount },
+                  { id: 'solutions', label: 'Solutions', icon: FileText, color: 'emerald', count: solCount },
+                  { id: 'lecturette', label: 'Lecturette', icon: Video, color: 'purple', count: lecCount },
+                ];
 
-                        {tatCount > 0 && (
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => setInspectModal({ type: 'TAT', dateFolder: folder.dateFolder })}
-                              className="px-2 py-0.5 rounded text-[10px] font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition-colors flex items-center gap-1"
-                              title="Inspect TAT pictures and batches"
-                            >
-                              <Eye className="w-3 h-3" />
-                              <span>Inspect</span>
-                            </button>
-                            <button
-                              onClick={() => setDeleteConfirm({ type: 'TAT', dateFolder: folder.dateFolder })}
-                              className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-                              title="Delete TAT"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                const tabColorClass = (id, isActive) => {
+                  const map = {
+                    tat: isActive ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-500' : 'text-slate-500 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/5',
+                    wat: isActive ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-b-2 border-cyan-500' : 'text-slate-500 hover:text-cyan-500 hover:bg-cyan-50 dark:hover:bg-cyan-500/5',
+                    solutions: isActive ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-b-2 border-emerald-500' : 'text-slate-500 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/5',
+                    lecturette: isActive ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-b-2 border-purple-500' : 'text-slate-500 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/5',
+                  };
+                  return map[id] || '';
+                };
+
+                return (
+                  <div>
+                    {/* Tab bar */}
+                    <div className="flex overflow-x-auto border-b border-slate-100 dark:border-dark-600 bg-slate-50/50 dark:bg-dark-800/30 scrollbar-thin">
+                      {tabs.map(tab => (
+                        <button
+                          key={tab.id}
+                          onClick={() => setFolderTab(folder.dateFolder, tab.id)}
+                          className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${tabColorClass(tab.id, activeTab === tab.id)}`}
+                        >
+                          <tab.icon className="w-3.5 h-3.5 shrink-0" />
+                          <span className="font-black tracking-wider text-sm">{tab.label}</span>
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${tab.count > 0 ? 'bg-slate-200/80 dark:bg-dark-700 text-slate-600 dark:text-slate-300 font-bold' : 'text-slate-400'}`}>
+                            {tab.count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* TAT Tab */}
+                    {activeTab === 'tat' && (
+                      <div className="p-4 space-y-3">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-2xl sm:text-3xl font-black text-indigo-600 dark:text-indigo-400 font-mono tracking-wider">TAT</span>
+                            <span className="text-sm text-slate-500 dark:text-slate-400 font-semibold">· {tatCount} pictures</span>
+                            {folder.tat?.rewriteCount > 0 && (
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                {folder.tat.rewriteCount} Rewrite
+                              </span>
+                            )}
+                            {folder.tat?.freshCount > 0 && (
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                {folder.tat.freshCount} Fresh
+                              </span>
+                            )}
                           </div>
-                        )}
-                      </div>
-
-                      {tatCount > 0 ? (
-                        <div className="grid grid-cols-4 gap-1.5">
-                          {folder.tat?.pictures?.slice(0, 8).map((pic, i) => (
-                            <div
-                              key={pic.id || i}
-                              onClick={() => setInspectModal({ type: 'TAT', dateFolder: folder.dateFolder })}
-                              className="relative aspect-video rounded overflow-hidden bg-slate-100 dark:bg-dark-700 cursor-pointer group"
-                              title="Click to inspect"
-                            >
-                              <img
-                                src={pic.url}
-                                alt=""
-                                className="w-full h-full object-cover blur-sm group-hover:blur-none scale-105 group-hover:scale-100 transition-all duration-300"
-                              />
-                              <div className="absolute inset-0 bg-black/25 group-hover:bg-transparent transition-colors flex items-center justify-between p-1 pointer-events-none">
-                                <span className="text-[9px] font-mono text-white/90 bg-black/60 px-1 rounded">#{i + 1}</span>
-                                <span
-                                  className={`w-2 h-2 rounded-full ring-1 ring-white/50 ${pic.batch === 'rewrite' ? 'bg-amber-400' : 'bg-emerald-400'}`}
-                                  title={pic.batch === 'rewrite' ? 'Rewrite batch' : 'Fresh batch'}
-                                />
-                              </div>
-                            </div>
-                          ))}
-                          {tatCount > 8 && (
-                            <button
-                              onClick={() => setInspectModal({ type: 'TAT', dateFolder: folder.dateFolder })}
-                              className="aspect-video rounded bg-slate-100 dark:bg-dark-700 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 text-slate-400 hover:text-indigo-500 flex items-center justify-center text-xs font-medium transition-colors"
-                            >
-                              +{tatCount - 8}
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-slate-400">No pictures uploaded</p>
-                      )}
-                    </div>
-
-                    <div className="pt-2 mt-auto">
-                      <button
-                        onClick={() => onStartTest('TAT', folder.dateFolder)}
-                        disabled={tatCount === 0}
-                        className="btn-primary inline-flex items-center gap-1.5 px-3 py-1 text-[11px] font-medium disabled:opacity-40"
-                      >
-                        <Play className="w-3 h-3 fill-current" /> Launch TAT
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* WAT */}
-                  <div className="p-4 flex flex-col justify-between h-full space-y-3">
-                    <div className="space-y-3 flex-1">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xl sm:text-2xl font-black text-cyan-600 dark:text-cyan-400 font-mono tracking-wider">
-                            WAT
-                          </span>
-                          <span className="text-xs text-slate-500 dark:text-slate-400 font-semibold">
-                            · {watCount} words
-                          </span>
-                        </div>
-                        {watCount > 0 && (
-                          <div className="flex items-center gap-1">
-                            <button onClick={() => setInspectModal({ type: 'WAT', dateFolder: folder.dateFolder })}
-                              className="p-1 rounded text-slate-400 hover:text-cyan-500 transition-colors" title="Inspect">
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
-                            <button onClick={() => setDeleteConfirm({ type: 'WAT', dateFolder: folder.dateFolder })}
-                              className="p-1 rounded text-slate-400 hover:text-red-500 transition-colors" title="Delete WAT">
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {watCount > 0 ? (
-                        <div className="flex flex-wrap gap-1 max-h-16 overflow-hidden">
-                          {folder.wat?.words?.slice(0, 12).map((w, i) => (
-                            <span key={i} className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-dark-700 text-slate-600 dark:text-slate-300">
-                              {w}
-                            </span>
-                          ))}
-                          {watCount > 12 && <span className="text-[11px] text-slate-400">+{watCount - 12}</span>}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-slate-400">No words uploaded</p>
-                      )}
-                    </div>
-
-                    <div className="pt-2 mt-auto">
-                      <button
-                        onClick={() => onStartTest('WAT', folder.dateFolder)}
-                        disabled={watCount === 0}
-                        className="bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md px-3 py-1 text-[11px] inline-flex items-center gap-1.5 transition-colors disabled:opacity-40"
-                      >
-                        <Play className="w-3 h-3 fill-current" /> Launch WAT
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Full Psych Test row */}
-                  {tatCount > 0 && watCount > 0 && (
-                    <div className="p-3 sm:col-span-2 border-t border-slate-100 dark:border-dark-600">
-                      <button
-                        onClick={() => onStartTest('PSYCH', folder.dateFolder)}
-                        className="bg-violet-600 hover:bg-violet-500 text-white font-medium rounded-md px-3.5 py-1 text-[11px] inline-flex items-center gap-1.5 transition-colors"
-                      >
-                        <Layers className="w-3.5 h-3.5" />
-                        <Play className="w-3 h-3 fill-current" />
-                        Launch Full Psych Test (TAT → WAT)
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Solution PDFs Section */}
-                  <div className="p-4 sm:col-span-2 border-t border-slate-100 dark:border-dark-600 space-y-3 bg-slate-50/50 dark:bg-dark-800/30">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-emerald-500" />
-                        <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                          Solution PDFs (Paper Written)
-                        </span>
-                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                          {folder.solutions?.length || 0}
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => {
-                          setPdfUploadModal({ dateFolder: folder.dateFolder });
-                          setPdfDate(folder.dateFolder);
-                          setPdfTitle(folder.dateFolder);
-                          setPdfFile(null);
-                        }}
-                        className="btn-secondary text-[11px] py-1 px-2 flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700"
-                      >
-                        <Upload className="w-3 h-3" />
-                        <span>Upload Solution PDF</span>
-                      </button>
-                    </div>
-
-                    {(folder.solutions?.length || 0) === 0 ? (
-                      <p className="text-[11px] text-slate-400">
-                        No handwritten solution PDFs attached to this batch yet.
-                      </p>
-                    ) : (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                        {folder.solutions.map(sol => (
-                          <div
-                            key={sol.id}
-                            className="card-sm p-2.5 flex items-center justify-between gap-2 border border-slate-200 dark:border-dark-600 hover:border-emerald-500/40 transition-colors"
-                          >
-                            <div
-                              onClick={() => setActivePdfSolution({ solution: sol, dateFolder: folder.dateFolder })}
-                              className="flex items-center gap-2 min-w-0 cursor-pointer flex-1"
-                            >
-                              <FileText className="w-4 h-4 text-emerald-500 shrink-0" />
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-[10px] font-bold px-1.5 py-0.2 rounded uppercase font-mono bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                    {sol.testType || 'TAT'}
-                                  </span>
-                                  <p className="text-xs font-bold text-slate-800 dark:text-white truncate" title={sol.title || sol.solutionDate}>
-                                    {sol.title || sol.solutionDate}
-                                  </p>
-                                </div>
-                                <p className="text-[10px] text-slate-400 truncate">
-                                  {sol.solutionDate} · {formatBytes(sol.size)}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-1 shrink-0">
+                          {tatCount > 0 && (
+                            <div className="flex items-center gap-1">
                               <button
-                                onClick={() => setActivePdfSolution({ solution: sol, dateFolder: folder.dateFolder })}
-                                className="p-1 rounded text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors"
-                                title="View PDF"
+                                onClick={() => setInspectModal({ type: 'TAT', dateFolder: folder.dateFolder })}
+                                className="px-2 py-1 rounded text-[11px] font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition-colors flex items-center gap-1"
                               >
-                                <Eye className="w-3.5 h-3.5" />
+                                <Eye className="w-3 h-3" /><span>Inspect</span>
                               </button>
                               <button
-                                onClick={() => handleDeleteSolution(folder.dateFolder, sol.id)}
+                                onClick={() => setDeleteConfirm({ type: 'TAT', dateFolder: folder.dateFolder })}
                                 className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-                                title="Delete PDF"
+                                title="Delete TAT"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
+                          )}
+                        </div>
+
+                        {tatCount > 0 ? (
+                          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+                            {folder.tat?.pictures?.slice(0, 10).map((pic, i) => (
+                              <div
+                                key={pic.id || i}
+                                onClick={() => setInspectModal({ type: 'TAT', dateFolder: folder.dateFolder })}
+                                className="relative aspect-video rounded-lg overflow-hidden bg-slate-100 dark:bg-dark-700 cursor-pointer group"
+                              >
+                                <img src={pic.url} alt="" className="w-full h-full object-cover blur-sm group-hover:blur-none scale-105 group-hover:scale-100 transition-all duration-300" />
+                                <div className="absolute inset-0 bg-black/25 group-hover:bg-transparent transition-colors flex items-center justify-between p-1 pointer-events-none">
+                                  <span className="text-[9px] font-mono text-white/90 bg-black/60 px-1 rounded">#{i + 1}</span>
+                                  <span className={`w-2 h-2 rounded-full ring-1 ring-white/50 ${pic.batch === 'rewrite' ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                                </div>
+                              </div>
+                            ))}
+                            {tatCount > 10 && (
+                              <button
+                                onClick={() => setInspectModal({ type: 'TAT', dateFolder: folder.dateFolder })}
+                                className="aspect-video rounded-lg bg-slate-100 dark:bg-dark-700 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 text-slate-400 hover:text-indigo-500 flex items-center justify-center text-xs font-bold transition-colors"
+                              >
+                                +{tatCount - 10}
+                              </button>
+                            )}
                           </div>
-                        ))}
+                        ) : (
+                          <div className="text-center py-8 space-y-2">
+                            <p className="text-sm text-slate-400">No TAT pictures uploaded yet</p>
+                            <button onClick={() => onNavigate('upload', folder.dateFolder)} className="btn-primary text-xs">
+                              <Plus className="w-3 h-3" /> Upload TAT
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <button
+                            onClick={() => onStartTest('TAT', folder.dateFolder)}
+                            disabled={tatCount === 0}
+                            className="btn-primary flex items-center gap-1.5 disabled:opacity-40"
+                          >
+                            <Play className="w-3 h-3 fill-current" /> Launch TAT
+                          </button>
+                          {tatCount > 0 && watCount > 0 && (
+                            <button
+                              onClick={() => onStartTest('PSYCH', folder.dateFolder)}
+                              className="bg-violet-600 hover:bg-violet-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors"
+                            >
+                              <Layers className="w-3 h-3" />
+                              <Play className="w-3 h-3 fill-current" /> Full Psych
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* WAT Tab */}
+                    {activeTab === 'wat' && (
+                      <div className="p-4 space-y-3">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-2xl sm:text-3xl font-black text-cyan-600 dark:text-cyan-400 font-mono tracking-wider">WAT</span>
+                            <span className="text-sm text-slate-500 dark:text-slate-400 font-semibold">· {watCount} words</span>
+                          </div>
+                          {watCount > 0 && (
+                            <div className="flex items-center gap-1">
+                              <button onClick={() => setInspectModal({ type: 'WAT', dateFolder: folder.dateFolder })}
+                                className="px-2 py-1 rounded text-[11px] font-medium text-cyan-600 dark:text-cyan-400 bg-cyan-50 dark:bg-cyan-500/10 hover:bg-cyan-100 flex items-center gap-1 transition-colors">
+                                <Eye className="w-3 h-3" /><span>Inspect</span>
+                              </button>
+                              <button onClick={() => setDeleteConfirm({ type: 'WAT', dateFolder: folder.dateFolder })}
+                                className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors" title="Delete WAT">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {watCount > 0 ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {folder.wat?.words?.slice(0, 20).map((w, i) => (
+                              <span key={i} className="text-xs font-mono px-2 py-1 rounded-lg bg-cyan-50 dark:bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border border-cyan-500/20">
+                                {w}
+                              </span>
+                            ))}
+                            {watCount > 20 && <span className="text-xs text-slate-400 self-center">+{watCount - 20} more</span>}
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 space-y-2">
+                            <p className="text-sm text-slate-400">No WAT words uploaded yet</p>
+                            <button onClick={() => onNavigate('upload', folder.dateFolder)} className="bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors">
+                              <Plus className="w-3 h-3" /> Upload WAT
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <button
+                            onClick={() => onStartTest('WAT', folder.dateFolder)}
+                            disabled={watCount === 0}
+                            className="bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                          >
+                            <Play className="w-3 h-3 fill-current" /> Launch WAT
+                          </button>
+                          {tatCount > 0 && watCount > 0 && (
+                            <button
+                              onClick={() => onStartTest('PSYCH', folder.dateFolder)}
+                              className="bg-violet-600 hover:bg-violet-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors"
+                            >
+                              <Layers className="w-3 h-3" />
+                              <Play className="w-3 h-3 fill-current" /> Full Psych
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Solutions Tab */}
+                    {activeTab === 'solutions' && (
+                      <div className="p-4 space-y-3">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-5 h-5 text-emerald-500" />
+                            <span className="text-2xl sm:text-3xl font-black text-emerald-600 dark:text-emerald-400 font-mono tracking-wider">Solutions</span>
+                            <span className="text-sm text-slate-500 dark:text-slate-400 font-semibold">· {solCount} PDFs</span>
+                          </div>
+                          <button
+                            onClick={() => {
+                              setPdfUploadModal({ dateFolder: folder.dateFolder });
+                              setPdfDate(folder.dateFolder);
+                              setPdfTitle('');
+                              setPdfFile(null);
+                            }}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors"
+                          >
+                            <Upload className="w-3 h-3" /> Upload PDF
+                          </button>
+                        </div>
+
+                        {solCount === 0 ? (
+                          <div className="text-center py-8 space-y-2">
+                            <FileText className="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto" />
+                            <p className="text-sm text-slate-400">No solution PDFs uploaded yet</p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {folder.solutions.map(sol => (
+                              <div key={sol.id}
+                                className="card-sm p-3 flex items-center justify-between gap-2 border border-slate-200 dark:border-dark-600 hover:border-emerald-500/40 transition-colors"
+                              >
+                                <div
+                                  onClick={() => setActivePdfSolution({ solution: sol, dateFolder: folder.dateFolder })}
+                                  className="flex items-center gap-2.5 min-w-0 cursor-pointer flex-1"
+                                >
+                                  <FileText className="w-5 h-5 text-emerald-500 shrink-0" />
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="text-[10px] font-bold px-1.5 rounded uppercase font-mono bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                        {sol.testType || 'TAT'}
+                                      </span>
+                                      <p className="text-xs font-bold text-slate-800 dark:text-white truncate">
+                                        {sol.title || sol.solutionDate}
+                                      </p>
+                                    </div>
+                                    <p className="text-[10px] text-slate-400">{sol.solutionDate} · {formatBytes(sol.size)}</p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button onClick={() => setActivePdfSolution({ solution: sol, dateFolder: folder.dateFolder })}
+                                    className="p-1.5 rounded text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors" title="View PDF">
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button onClick={() => handleDeleteSolution(folder.dateFolder, sol.id)}
+                                    className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors" title="Delete PDF">
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Lecturette Tab */}
+                    {activeTab === 'lecturette' && (
+                      <div className="p-4 space-y-3">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2">
+                            <Video className="w-5 h-5 text-purple-500" />
+                            <span className="text-2xl sm:text-3xl font-black text-purple-600 dark:text-purple-400 font-mono tracking-wider">Lecturette</span>
+                            <span className="text-sm text-slate-500 dark:text-slate-400 font-semibold">· {lecCount} videos</span>
+                          </div>
+                          <button
+                            onClick={() => onNavigate('lecturette')}
+                            className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors"
+                          >
+                            <Video className="w-3 h-3" /> Record New
+                          </button>
+                        </div>
+
+                        {lecCount === 0 ? (
+                          <div className="text-center py-8 space-y-2">
+                            <Video className="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto" />
+                            <p className="text-sm text-slate-400">No lecturette videos recorded yet</p>
+                            <button onClick={() => onNavigate('lecturette')} className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors">
+                              <Video className="w-3 h-3" /> Go to Recorder
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {folder.lecturettes.map(lec => (
+                              <div key={lec.id} className="card-sm p-3 border border-slate-200 dark:border-dark-600 hover:border-purple-500/40 transition-colors space-y-2">
+                                {/* Video thumbnail + play */}
+                                <div
+                                  onClick={() => setVideoModal({ url: lec.url, title: lec.title })}
+                                  className="aspect-video bg-black rounded-lg overflow-hidden relative cursor-pointer group flex items-center justify-center"
+                                >
+                                  <video src={lec.url} className="w-full h-full object-cover" />
+                                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center group-hover:bg-black/20 transition-colors">
+                                    <div className="w-10 h-10 rounded-full bg-white/90 text-slate-900 flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
+                                      <Play className="w-4 h-4 fill-current" />
+                                    </div>
+                                  </div>
+                                </div>
+                                {/* Info + actions */}
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-bold text-slate-800 dark:text-white truncate">{lec.title || 'Lecturette'}</p>
+                                    <p className="text-[10px] text-slate-400 flex items-center gap-1">
+                                      <Calendar className="w-2.5 h-2.5" />{lec.recordedDate || folder.dateFolder}
+                                    </p>
+                                  </div>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      onClick={() => setEditingLecturette({ id: lec.id, dateFolder: folder.dateFolder, title: lec.title || '', recordedDate: lec.recordedDate || folder.dateFolder })}
+                                      className="p-1.5 rounded text-slate-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10 transition-colors"
+                                      title="Edit title/date"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteLecturette(folder.dateFolder, lec.id)}
+                                      className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                                      title="Delete video"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-
-                  {/* Lecturette Section */}
-                  {(folder.lecturettes?.length || 0) > 0 && (
-                    <div className="p-4 sm:col-span-2 border-t border-slate-100 dark:border-dark-600 space-y-3 bg-purple-50/20 dark:bg-purple-950/10">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Video className="w-5 h-5 text-purple-500" />
-                          <span className="text-lg sm:text-xl font-black text-purple-600 dark:text-purple-400 font-mono tracking-wider">
-                            Lecturette
-                          </span>
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20">
-                            {folder.lecturettes.length} videos
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => onNavigate('lecturette')}
-                          className="btn-secondary text-[10px] py-0.5 px-2 flex items-center gap-1 text-purple-600 dark:text-purple-400"
-                        >
-                          <Video className="w-3 h-3" />
-                          <span>Record Live</span>
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {folder.lecturettes.map(lec => (
-                          <div
-                            key={lec.id}
-                            className="card-sm p-2 flex items-center justify-between gap-2 border border-slate-200 dark:border-dark-600"
-                          >
-                            <div
-                              onClick={() => setVideoModal({ url: lec.url, title: lec.title })}
-                              className="flex items-center gap-2 min-w-0 cursor-pointer flex-1"
-                            >
-                              <div className="w-6 h-6 rounded bg-purple-600 text-white flex items-center justify-center shrink-0">
-                                <Play className="w-3 h-3 fill-current" />
-                              </div>
-                              <div className="min-w-0">
-                                <p className="text-xs font-bold text-slate-800 dark:text-white truncate">
-                                  {lec.title || 'Lecturette'}
-                                </p>
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => handleDeleteLecturette(folder.dateFolder, lec.id)}
-                              className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-                              title="Delete video"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                </div>
-              )}
+                );
+              })()}
             </div>
           );
         })}
@@ -587,7 +668,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                   type="text"
                   value={pdfTitle}
                   onChange={e => setPdfTitle(e.target.value)}
-                  placeholder={`e.g. ${pdfDate || pdfUploadModal.dateFolder}`}
+                  placeholder="Custom label (defaults to PDF filename)"
                   className="input py-1.5 text-xs"
                 />
               </div>
@@ -613,7 +694,14 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                   type="file"
                   accept="application/pdf"
                   required
-                  onChange={e => setPdfFile(e.target.files?.[0] || null)}
+                  onChange={e => {
+                    const file = e.target.files?.[0] || null;
+                    setPdfFile(file);
+                    if (file) {
+                      const nameWithoutExt = file.name.replace(/\.pdf$/i, '');
+                      setPdfTitle(nameWithoutExt);
+                    }
+                  }}
                   className="w-full text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 dark:file:bg-emerald-950/40 file:text-emerald-700 dark:file:text-emerald-300 hover:file:bg-emerald-100"
                 />
               </div>
@@ -662,6 +750,79 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
               />
             </div>
           </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Edit Lecturette Title and Date Modal */}
+      {editingLecturette && createPortal(
+        <div className="fixed inset-0 z-[110] bg-black/80 flex items-center justify-center p-4">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await handleSaveLecturetteEdit();
+            }}
+            className="card max-w-md w-full p-5 space-y-4 shadow-2xl border border-slate-200 dark:border-dark-600"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-dark-700">
+              <div className="flex items-center gap-2">
+                <Video className="w-4 h-4 text-purple-500" />
+                <h3 className="font-bold text-sm text-slate-800 dark:text-white">
+                  Edit Lecturette Details
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingLecturette(null)}
+                className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="label">Lecturette Title</label>
+                <input
+                  type="text"
+                  value={editingLecturette.title}
+                  onChange={e => setEditingLecturette(p => ({ ...p, title: e.target.value }))}
+                  placeholder="e.g. India's Defense Strategy"
+                  required
+                  className="input py-1.5 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="label">Date</label>
+                <input
+                  type="date"
+                  value={editingLecturette.recordedDate}
+                  onChange={e => setEditingLecturette(p => ({ ...p, recordedDate: e.target.value }))}
+                  required
+                  className="input py-1.5 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end pt-2 border-t border-slate-100 dark:border-dark-700">
+              <button
+                type="button"
+                onClick={() => setEditingLecturette(null)}
+                className="btn-secondary py-1 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={lecEditSaving}
+                className="btn-primary bg-purple-600 hover:bg-purple-500 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{lecEditSaving ? 'Saving...' : 'Save Changes'}</span>
+              </button>
+            </div>
+          </form>
         </div>,
         document.body
       )}

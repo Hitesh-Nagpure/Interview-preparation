@@ -96,6 +96,10 @@ const LecturetteSchema = new mongoose.Schema({
   publicId: {
     type: String
   },
+  recordedDate: {
+    type: String,
+    default: ''
+  },
   recordedAt: {
     type: Date,
     default: Date.now

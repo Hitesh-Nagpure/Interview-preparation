@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   Video, VideoOff, Mic, MicOff, Play, Pause, Square, RotateCcw,
   Upload, Trash2, CheckCircle2, AlertCircle, Calendar, Film, X,
-  Volume2, VolumeX, Maximize2
+  Volume2, VolumeX, Maximize2, Edit3, Check
 } from 'lucide-react';
 import CustomVideoPlayer from './CustomVideoPlayer';
 
@@ -16,6 +16,10 @@ function formatTime(secs) {
 export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const today = new Date().toISOString().split('T')[0];
   const [selectedFolder, setSelectedFolder] = useState(folders[0]?.dateFolder || today);
+  const [recTitle, setRecTitle] = useState('');
+  const [recDate, setRecDate] = useState(folders[0]?.dateFolder || today);
+  const [editingLecturette, setEditingLecturette] = useState(null); // { id, folderDate, title, recordedDate }
+  const [lecEditSaving, setLecEditSaving] = useState(false);
   const [stream, setStream] = useState(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState('IDLE'); // 'IDLE', 'RECORDING', 'PAUSED', 'STOPPED'
@@ -306,6 +310,15 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     totalDurationRef.current = 0;
   };
 
+  useEffect(() => {
+    if (selectedFolder) {
+      setRecDate(selectedFolder);
+      if (!recTitle || recTitle.startsWith('Lecturette')) {
+        setRecTitle(`Lecturette ${selectedFolder}`);
+      }
+    }
+  }, [selectedFolder]);
+
   // Upload to Cloudinary
   const handleSaveToCloudinary = async () => {
     if (!recordedBlob) return;
@@ -316,22 +329,46 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       const ext = recordedBlob.type.includes('mp4') ? '.mp4' : '.webm';
       const file = new File([recordedBlob], `lecturette-${Date.now()}${ext}`, { type: recordedBlob.type });
       fd.append('video', file);
-      fd.append('title', `Lecturette ${selectedFolder}`);
+      const targetFolder = (recDate || selectedFolder).trim();
+      const targetTitle = (recTitle || `Lecturette ${targetFolder}`).trim();
+      fd.append('title', targetTitle);
+      fd.append('recordedDate', targetFolder);
       fd.append('duration', totalDurationRef.current.toString());
 
-      const res = await fetch(`/api/folders/${encodeURIComponent(selectedFolder)}/lecturette`, {
+      const res = await fetch(`/api/folders/${encodeURIComponent(targetFolder)}/lecturette`, {
         method: 'POST',
         body: fd
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to upload video');
 
-      setUploadSuccess('Lecturette video saved successfully to Cloudinary!');
+      setUploadSuccess(`Lecturette "${targetTitle}" saved successfully to Cloudinary!`);
       if (onRefresh) onRefresh();
     } catch (err) {
       setError(err.message);
     } finally {
       setUploading(false);
+    }
+  };
+
+  // Edit existing lecturette title and date
+  const handleSaveLecturetteEdit = async () => {
+    if (!editingLecturette) return;
+    setLecEditSaving(true);
+    try {
+      const { id, folderDate, title, recordedDate } = editingLecturette;
+      const res = await fetch(`/api/folders/${encodeURIComponent(folderDate)}/lecturette/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, recordedDate })
+      });
+      if (!res.ok) throw new Error('Failed to update lecturette');
+      setEditingLecturette(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLecEditSaving(false);
     }
   };
 
@@ -475,104 +512,137 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         </div>
 
         {/* Studio Controls Bar */}
-        <div className="px-4 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-3">
-          {/* Left: Device Toggles */}
-          <div className="flex items-center gap-1.5">
-            {cameraActive ? (
-              <button
-                onClick={stopCamera}
-                disabled={recordingStatus === 'RECORDING'}
-                className="p-1.5 rounded-md bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-30"
-                title="Turn off camera"
-              >
-                <VideoOff className="w-4 h-4" />
-              </button>
-            ) : (
-              <button
-                onClick={startCamera}
-                className="p-1.5 rounded-md bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
-                title="Turn on camera"
-              >
-                <Video className="w-4 h-4" />
-              </button>
-            )}
-          </div>
+        <div className="px-3 sm:px-4 py-3 bg-slate-950 border-t border-slate-800 flex flex-col gap-3">
+          {/* If STOPPED: Title and Date edit fields */}
+          {recordingStatus === 'STOPPED' && (
+            <div className="w-full pb-3 border-b border-slate-800 animate-fadeIn">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Lecturette Title
+                  </label>
+                  <input
+                    type="text"
+                    value={recTitle}
+                    onChange={e => setRecTitle(e.target.value)}
+                    placeholder={`e.g. Lecturette ${recDate || selectedFolder}`}
+                    className="input py-1.5 text-xs bg-slate-900 border-slate-700 text-white w-full focus:border-purple-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={recDate}
+                    onChange={e => setRecDate(e.target.value)}
+                    className="input py-1.5 text-xs bg-slate-900 border-slate-700 text-white w-full focus:border-purple-500"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
-          {/* Center: Recording Action Controls */}
-          <div className="flex items-center gap-2">
-            {recordingStatus === 'IDLE' && (
-              <button
-                onClick={handleStartRecording}
-                disabled={!cameraActive}
-                className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 text-xs flex items-center gap-1.5 disabled:opacity-40"
-              >
-                <span className="w-2.5 h-2.5 rounded-full bg-white" />
-                <span>Start Recording</span>
-              </button>
-            )}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            {/* Left: Device Toggles */}
+            <div className="flex items-center gap-1.5">
+              {cameraActive ? (
+                <button
+                  onClick={stopCamera}
+                  disabled={recordingStatus === 'RECORDING'}
+                  className="p-1.5 rounded-md bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-30"
+                  title="Turn off camera"
+                >
+                  <VideoOff className="w-4 h-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={startCamera}
+                  className="p-1.5 rounded-md bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+                  title="Turn on camera"
+                >
+                  <Video className="w-4 h-4" />
+                </button>
+              )}
+            </div>
 
-            {recordingStatus === 'RECORDING' && (
-              <>
+            {/* Center: Recording Action Controls */}
+            <div className="flex items-center gap-2">
+              {recordingStatus === 'IDLE' && (
                 <button
-                  onClick={handlePauseRecording}
-                  className="btn-secondary bg-slate-800 hover:bg-slate-700 text-white border-slate-700 px-3 py-1.5 text-xs flex items-center gap-1"
+                  onClick={handleStartRecording}
+                  disabled={!cameraActive}
+                  className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 text-xs flex items-center gap-1.5 disabled:opacity-40"
                 >
-                  <Pause className="w-3.5 h-3.5" />
-                  <span>Pause</span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-white" />
+                  <span>Start Recording</span>
                 </button>
-                <button
-                  onClick={handleStopRecording}
-                  className="btn-primary bg-red-600 hover:bg-red-500 px-4 py-1.5 text-xs flex items-center gap-1"
-                >
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                  <span>Stop</span>
-                </button>
-              </>
-            )}
+              )}
 
-            {recordingStatus === 'PAUSED' && (
-              <>
-                <button
-                  onClick={handleResumeRecording}
-                  className="btn-primary bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 text-xs flex items-center gap-1"
-                >
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Resume</span>
-                </button>
-                <button
-                  onClick={handleStopRecording}
-                  className="btn-secondary bg-red-600/20 text-red-400 hover:bg-red-600/30 border-red-500/30 px-3 py-1.5 text-xs flex items-center gap-1"
-                >
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                  <span>Stop</span>
-                </button>
-              </>
-            )}
+              {recordingStatus === 'RECORDING' && (
+                <>
+                  <button
+                    onClick={handlePauseRecording}
+                    className="btn-secondary bg-slate-800 hover:bg-slate-700 text-white border-slate-700 px-3 py-1.5 text-xs flex items-center gap-1"
+                  >
+                    <Pause className="w-3.5 h-3.5" />
+                    <span>Pause</span>
+                  </button>
+                  <button
+                    onClick={handleStopRecording}
+                    className="btn-primary bg-red-600 hover:bg-red-500 px-4 py-1.5 text-xs flex items-center gap-1"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                    <span>Stop</span>
+                  </button>
+                </>
+              )}
 
-            {recordingStatus === 'STOPPED' && (
-              <>
-                <button
-                  onClick={handleRetake}
-                  className="btn-secondary bg-slate-800 hover:bg-slate-700 text-white border-slate-700 px-3 py-1 text-xs flex items-center gap-1"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>Retake</span>
-                </button>
-                <button
-                  onClick={handleSaveToCloudinary}
-                  disabled={uploading}
-                  className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-3.5 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
-                >
-                  <Upload className="w-3 h-3" />
-                  <span>{uploading ? 'Saving...' : 'Save'}</span>
-                </button>
-              </>
-            )}
-          </div>
+              {recordingStatus === 'PAUSED' && (
+                <>
+                  <button
+                    onClick={handleResumeRecording}
+                    className="btn-primary bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 text-xs flex items-center gap-1"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Resume</span>
+                  </button>
+                  <button
+                    onClick={handleStopRecording}
+                    className="btn-secondary bg-red-600/20 text-red-400 hover:bg-red-600/30 border-red-500/30 px-3 py-1.5 text-xs flex items-center gap-1"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                    <span>Stop</span>
+                  </button>
+                </>
+              )}
 
-          {/* Right: State summary */}
-          <div className="text-[11px] font-mono text-slate-400">
-            {recordingStatus === 'STOPPED' ? 'Reviewing' : recordingStatus}
+              {recordingStatus === 'STOPPED' && (
+                <>
+                  <button
+                    onClick={handleRetake}
+                    className="btn-secondary bg-slate-800 hover:bg-slate-700 text-white border-slate-700 px-3 py-1 text-xs flex items-center gap-1"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Retake</span>
+                  </button>
+                  <button
+                    onClick={handleSaveToCloudinary}
+                    disabled={uploading}
+                    className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-3.5 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
+                  >
+                    <Upload className="w-3 h-3" />
+                    <span>{uploading ? 'Saving...' : 'Save'}</span>
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* Right: State summary */}
+            <div className="text-[11px] font-mono text-slate-400">
+              {recordingStatus === 'STOPPED' ? 'Reviewing' : recordingStatus}
+            </div>
           </div>
         </div>
       </div>
@@ -607,22 +677,31 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between text-xs">
-                  <div>
+                <div className="flex items-center justify-between text-xs gap-1">
+                  <div className="min-w-0 flex-1">
                     <p className="font-bold text-slate-800 dark:text-white truncate">
                       {lec.title || 'Lecturette Recording'}
                     </p>
                     <p className="text-[10px] text-slate-400 flex items-center gap-1">
-                      <Calendar className="w-2.5 h-2.5 inline" /> {lec.folderDate}
+                      <Calendar className="w-2.5 h-2.5 inline" /> {lec.recordedDate || lec.folderDate}
                     </p>
                   </div>
-                  <button
-                    onClick={() => handleDeleteLecturette(lec.folderDate, lec.id)}
-                    className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-                    title="Delete lecturette video"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => setEditingLecturette({ id: lec.id, folderDate: lec.folderDate, title: lec.title || '', recordedDate: lec.recordedDate || lec.folderDate })}
+                      className="p-1.5 rounded text-slate-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10 transition-colors"
+                      title="Edit title and date"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteLecturette(lec.folderDate, lec.id)}
+                      className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                      title="Delete lecturette video"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -651,6 +730,78 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
               />
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Edit Lecturette Title and Date Modal */}
+      {editingLecturette && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await handleSaveLecturetteEdit();
+            }}
+            className="card max-w-md w-full p-5 space-y-4 shadow-2xl border border-slate-200 dark:border-dark-600 bg-white dark:bg-dark-850"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-dark-700">
+              <div className="flex items-center gap-2">
+                <Video className="w-4 h-4 text-purple-500" />
+                <h3 className="font-bold text-sm text-slate-800 dark:text-white">
+                  Edit Lecturette Details
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingLecturette(null)}
+                className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="label">Lecturette Title</label>
+                <input
+                  type="text"
+                  value={editingLecturette.title}
+                  onChange={e => setEditingLecturette(p => ({ ...p, title: e.target.value }))}
+                  placeholder="e.g. India's Defense Strategy"
+                  required
+                  className="input py-1.5 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="label">Date</label>
+                <input
+                  type="date"
+                  value={editingLecturette.recordedDate}
+                  onChange={e => setEditingLecturette(p => ({ ...p, recordedDate: e.target.value }))}
+                  required
+                  className="input py-1.5 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end pt-2 border-t border-slate-100 dark:border-dark-700">
+              <button
+                type="button"
+                onClick={() => setEditingLecturette(null)}
+                className="btn-secondary py-1 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={lecEditSaving}
+                className="btn-primary bg-purple-600 hover:bg-purple-500 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{lecEditSaving ? 'Saving...' : 'Save Changes'}</span>
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>
