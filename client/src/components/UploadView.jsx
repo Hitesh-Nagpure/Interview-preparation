@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf } from 'lucide-react';
+import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf, ArrowRight, FastForward } from 'lucide-react';
 
 export default function UploadView({ initialDateFolder, onUploadSuccess, onRefresh }) {
   const today = new Date().toISOString().split('T')[0];
@@ -22,8 +22,33 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
   const [watAppend, setWatAppend] = useState(false);
   const [watUploading, setWatUploading] = useState(false);
 
+  // Solutions PDF state
+  const [solTitle, setSolTitle] = useState('');
+  const [solDate, setSolDate] = useState(initialDateFolder || today);
+  const [solTestType, setSolTestType] = useState('TAT');
+  const [solFile, setSolFile] = useState(null);
+  const [solUploading, setSolUploading] = useState(false);
+  const solFileRef = useRef(null);
+
   const [toast, setToast] = useState(null); // { type, text, visible }
   const toastTimer = useRef(null);
+
+  const handleSkipAll = async () => {
+    try {
+      const res = await fetch('/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dateFolder: dateFolder.trim(), folderTitle })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showToast('success', `Batch ${dateFolder} registered without uploaded materials.`);
+      if (onRefresh) onRefresh();
+      if (onUploadSuccess) onUploadSuccess();
+    } catch (err) {
+      showToast('error', err.message);
+    }
+  };
 
   const showToast = useCallback((type, text) => {
     // Clear any existing timer
@@ -42,7 +67,48 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
   const freshFileRef = useRef(null);
   const watFileRef = useRef(null);
 
-  useEffect(() => { if (initialDateFolder) setDateFolder(initialDateFolder); }, [initialDateFolder]);
+  useEffect(() => {
+    if (initialDateFolder) {
+      setDateFolder(initialDateFolder);
+      setSolDate(initialDateFolder);
+      if (!solTitle) setSolTitle(initialDateFolder);
+    }
+  }, [initialDateFolder]);
+
+  const uploadSolution = async (e) => {
+    e.preventDefault();
+    if (!solFile) {
+      showToast('error', 'Please select a PDF file.');
+      return;
+    }
+    setSolUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', solFile);
+      const chosenDate = solDate || dateFolder || today;
+      fd.append('solutionDate', chosenDate);
+      fd.append('title', solTitle || chosenDate);
+      fd.append('testType', solTestType);
+
+      const targetFolder = (dateFolder || chosenDate).trim();
+      const res = await fetch(`/api/folders/${encodeURIComponent(targetFolder)}/solutions`, {
+        method: 'POST',
+        body: fd
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to upload solution PDF');
+
+      showToast('success', `Solution PDF "${solTitle || chosenDate}" uploaded to batch ${targetFolder}.`);
+      setSolFile(null);
+      if (solFileRef.current) solFileRef.current.value = '';
+      if (onRefresh) onRefresh();
+      if (onUploadSuccess) onUploadSuccess();
+    } catch (err) {
+      showToast('error', err.message);
+    } finally {
+      setSolUploading(false);
+    }
+  };
 
   const totalTatCount = rewritePreviews.length + freshPreviews.length;
 
@@ -205,36 +271,64 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-5">
 
       {/* Date folder row */}
-      <div className="card p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label className="label"><Calendar className="w-3.5 h-3.5 inline mr-1" />Date Folder</label>
-          <input type="date" value={dateFolder} onChange={e => setDateFolder(e.target.value)} className="input" />
+      <div className="card p-4 space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="label"><Calendar className="w-3.5 h-3.5 inline mr-1" />Date Folder</label>
+            <input type="date" value={dateFolder} onChange={e => setDateFolder(e.target.value)} className="input" />
+          </div>
+          <div>
+            <label className="label">Label (optional)</label>
+            <input type="text" value={folderTitle} onChange={e => setFolderTitle(e.target.value)} placeholder="e.g. 33 SSB Prep" className="input" />
+          </div>
         </div>
-        <div>
-          <label className="label">Label (optional)</label>
-          <input type="text" value={folderTitle} onChange={e => setFolderTitle(e.target.value)} placeholder="e.g. 33 SSB Prep" className="input" />
+        <div className="flex justify-end pt-1 border-t border-slate-100 dark:border-dark-700">
+          <button
+            type="button"
+            onClick={handleSkipAll}
+            className="btn-secondary py-1 text-xs flex items-center gap-1.5 text-slate-600 dark:text-slate-300"
+            title="Create or register this date folder without uploading materials"
+          >
+            <FastForward className="w-3 h-3 text-amber-500" />
+            <span>Skip Uploading Materials & Create Batch</span>
+          </button>
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* Tabs with larger test titles */}
       <div className="flex border-b border-slate-200 dark:border-dark-600">
         <button
           onClick={() => setTab('tat')}
-          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-all ${
             tab === 'tat' ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
           <ImageIcon className="w-4 h-4" />
-          TAT Pictures {totalTatCount > 0 && <span className="badge-indigo">{totalTatCount}</span>}
+          <span className="text-base sm:text-lg font-black tracking-wide font-mono">TAT</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Pictures</span>
+          {totalTatCount > 0 && <span className="badge-indigo">{totalTatCount}</span>}
         </button>
         <button
           onClick={() => setTab('wat')}
-          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-all ${
             tab === 'wat' ? 'border-cyan-500 text-cyan-600 dark:text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
           <Type className="w-4 h-4" />
-          WAT Words {watWords.length > 0 && <span className="badge-cyan">{watWords.length}</span>}
+          <span className="text-base sm:text-lg font-black tracking-wide font-mono">WAT</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Words</span>
+          {watWords.length > 0 && <span className="badge-cyan">{watWords.length}</span>}
+        </button>
+        <button
+          onClick={() => setTab('solutions')}
+          className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-all ${
+            tab === 'solutions' ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+          }`}
+        >
+          <FileText className="w-4 h-4" />
+          <span className="text-base sm:text-lg font-black tracking-wide font-mono">SOLUTIONS</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">PDF</span>
+          {solFile && <span className="badge-emerald">1</span>}
         </button>
       </div>
 
@@ -357,11 +451,25 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
             </label>
           </div>
 
-          <button type="submit" disabled={tatUploading || !totalTatCount}
-            className="w-full btn-primary flex items-center justify-center gap-2 disabled:opacity-40">
-            <Upload className="w-4 h-4" />
-            {tatUploading ? 'Saving...' : `Save ${totalTatCount || ''} Pictures`}
-          </button>
+          <div className="flex gap-2 pt-1">
+            <button
+              type="submit"
+              disabled={tatUploading || !totalTatCount}
+              className="btn-primary px-4 py-1.5 flex items-center justify-center gap-1.5 disabled:opacity-40"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{tatUploading ? 'Saving...' : `Save ${totalTatCount || ''} Pictures`}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('wat')}
+              className="btn-secondary py-1.5 px-3 flex items-center gap-1 text-xs"
+              title="Skip TAT upload and proceed to WAT"
+            >
+              <span>Skip TAT</span>
+              <ArrowRight className="w-3 h-3" />
+            </button>
+          </div>
         </form>
       )}
 
@@ -431,11 +539,138 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
             </label>
           </div>
 
-          <button type="submit" disabled={watUploading || !watWords.length}
-            className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-lg px-4 py-2 text-sm flex items-center justify-center gap-2 disabled:opacity-40 transition-colors">
-            <Upload className="w-4 h-4" />
-            {watUploading ? 'Saving...' : `Save ${watWords.length || ''} Words`}
-          </button>
+          <div className="flex gap-2 pt-1">
+            <button
+              type="submit"
+              disabled={watUploading || !watWords.length}
+              className="bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-md px-4 py-1.5 text-xs flex items-center justify-center gap-1.5 disabled:opacity-40 transition-colors"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{watUploading ? 'Saving...' : `Save ${watWords.length || ''} Words`}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleSkipAll}
+              className="btn-secondary py-1.5 px-3 flex items-center gap-1 text-xs"
+              title="Skip WAT upload and finish batch"
+            >
+              <span>Skip WAT</span>
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Solutions PDF Tab */}
+      {tab === 'solutions' && (
+        <form onSubmit={uploadSolution} className="card p-5 space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="label"><Calendar className="w-3.5 h-3.5 inline mr-1" />Solution Date</label>
+              <input
+                type="date"
+                value={solDate}
+                onChange={e => {
+                  setSolDate(e.target.value);
+                  if (!solTitle || solTitle === solDate) setSolTitle(e.target.value);
+                }}
+                className="input"
+              />
+            </div>
+            <div>
+              <label className="label">Test Type</label>
+              <select
+                value={solTestType}
+                onChange={e => setSolTestType(e.target.value)}
+                className="input"
+              >
+                <option value="TAT">TAT</option>
+                <option value="WAT">WAT</option>
+                <option value="SRT">SRT</option>
+                <option value="SDT">SDT</option>
+                <option value="GENERAL">General Psych</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Document Title</label>
+              <input
+                type="text"
+                value={solTitle}
+                onChange={e => setSolTitle(e.target.value)}
+                placeholder={solDate || 'e.g. 2026-09-21 Solution'}
+                className="input"
+              />
+            </div>
+          </div>
+
+          {/* PDF File Picker */}
+          <div>
+            <label className="label">Handwritten Solution PDF Document</label>
+            <input
+              ref={solFileRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              className="hidden"
+              onChange={e => {
+                if (e.target.files?.[0]) setSolFile(e.target.files[0]);
+              }}
+            />
+            {!solFile ? (
+              <div
+                onClick={() => solFileRef.current?.click()}
+                className="border-2 border-dashed border-emerald-500/30 dark:border-emerald-500/20 hover:border-emerald-500 rounded-xl p-8 text-center cursor-pointer transition-colors bg-emerald-50/20 dark:bg-emerald-950/10 space-y-2"
+              >
+                <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                    Click to select or drag and drop paper-written solution PDF
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Maximum size: 50 MB (.pdf)</p>
+                </div>
+              </div>
+            ) : (
+              <div className="card-sm p-3 flex items-center justify-between border border-emerald-500/40 bg-emerald-50/30 dark:bg-emerald-950/20">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-slate-800 dark:text-white truncate">{solFile.name}</p>
+                    <p className="text-[10px] text-slate-400">
+                      {(solFile.size / (1024 * 1024)).toFixed(2)} MB · Ready to upload
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSolFile(null);
+                    if (solFileRef.current) solFileRef.current.value = '';
+                  }}
+                  className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                  title="Remove selected file"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Submit button */}
+          <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-dark-600">
+            <span className="text-[11px] text-slate-400">
+              Batch Folder: <strong className="font-mono text-slate-600 dark:text-slate-300">{dateFolder}</strong>
+            </span>
+            <button
+              type="submit"
+              disabled={solUploading || !solFile}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-md px-4 py-1.5 text-xs flex items-center justify-center gap-1.5 disabled:opacity-40 transition-colors"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{solUploading ? 'Uploading to Cloudinary...' : 'Upload Solution PDF'}</span>
+            </button>
+          </div>
         </form>
       )}
       </div>

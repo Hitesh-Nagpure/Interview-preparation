@@ -1,10 +1,26 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const path = require('path');
 const fs = require('fs');
+const https = require('https');
+const { PDFDocument } = require('pdf-lib');
 const multer = require('multer');
 const DateFolder = require('./models/DateFolder');
+
+function fetchBuffer(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+      const chunks = [];
+      res.on('data', (d) => chunks.push(d));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    }).on('error', reject);
+  });
+}
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -30,10 +46,10 @@ if (CLOUD_NAME && CLOUD_API_KEY && CLOUD_API_SECRET) {
 }
 
 // Helper: upload a buffer to Cloudinary, returns the secure_url
-function uploadBufferToCloudinary(buffer, originalname) {
+function uploadBufferToCloudinary(buffer, originalname, folder = 'ssb-psych-prep/tat', resourceType = 'auto') {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { folder: 'ssb-psych-prep/tat', resource_type: 'image' },
+      { folder, resource_type: resourceType },
       (error, result) => {
         if (error) return reject(error);
         resolve(result);
@@ -46,13 +62,17 @@ function uploadBufferToCloudinary(buffer, originalname) {
 // ── Multer — always use memory storage; we decide where to put files after ────
 const memoryUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB per file
+  limits: { fileSize: 100 * 1024 * 1024 } // 100 MB per file (supports video/PDF)
 });
 
 // ── Local disk fallback (for development without Cloudinary) ──────────────────
 const uploadsDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
+}
+const solutionsDir = path.join(__dirname, '../uploads/solutions');
+if (!fs.existsSync(solutionsDir)) {
+  fs.mkdirSync(solutionsDir, { recursive: true });
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -182,7 +202,26 @@ app.get('/api/folders', async (req, res) => {
         count: f.wat?.words?.length || 0,
         words: (f.wat?.words || []).slice(0, 15),
         updatedAt: f.wat?.updatedAt
-      }
+      },
+      solutionsCount: f.solutions?.length || 0,
+      solutions: (f.solutions || []).map(s => ({
+        id: s.id,
+        solutionDate: s.solutionDate,
+        title: s.title,
+        testType: s.testType,
+        url: s.url,
+        size: s.size,
+        originalName: s.originalName,
+        uploadedAt: s.uploadedAt
+      })),
+      lecturettesCount: f.lecturettes?.length || 0,
+      lecturettes: (f.lecturettes || []).map(l => ({
+        id: l.id,
+        title: l.title,
+        duration: l.duration,
+        url: l.url,
+        recordedAt: l.recordedAt
+      }))
     }));
     res.json(formatted);
   } catch (err) {
@@ -355,7 +394,33 @@ app.post('/api/folders/:dateFolder/wat', async (req, res) => {
   }
 });
 
-// 6. DELETE entire Date Folder
+// 6. Create or skip materials for Date Folder
+app.post('/api/folders', async (req, res) => {
+  try {
+    const { dateFolder, folderTitle } = req.body;
+    if (!dateFolder) return res.status(400).json({ error: 'dateFolder is required' });
+    let folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) {
+      folder = new DateFolder({
+        dateFolder,
+        folderTitle: folderTitle || `Batch ${dateFolder}`,
+        tat: { pictures: [] },
+        wat: { words: [] },
+        solutions: [],
+        lecturettes: []
+      });
+      await folder.save();
+    } else if (folderTitle) {
+      folder.folderTitle = folderTitle;
+      await folder.save();
+    }
+    res.json({ success: true, message: `Date folder ${dateFolder} saved`, folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 7. DELETE entire Date Folder
 app.delete('/api/folders/:dateFolder', async (req, res) => {
   try {
     const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
@@ -364,7 +429,17 @@ app.delete('/api/folders/:dateFolder', async (req, res) => {
     // Clean up files
     if (folder.tat && folder.tat.pictures) {
       for (const pic of folder.tat.pictures) {
-        await deleteStoredFile(pic.url, pic.id);
+        await deleteStoredFile(pic.url, pic.id, 'image');
+      }
+    }
+    if (folder.solutions) {
+      for (const sol of folder.solutions) {
+        await deleteStoredFile(sol.url, sol.publicId, 'raw');
+      }
+    }
+    if (folder.lecturettes) {
+      for (const lec of folder.lecturettes) {
+        await deleteStoredFile(lec.url, lec.publicId, 'video');
       }
     }
 
@@ -375,7 +450,7 @@ app.delete('/api/folders/:dateFolder', async (req, res) => {
   }
 });
 
-// 7. DELETE only TAT batch
+// 8. DELETE only TAT batch
 app.delete('/api/folders/:dateFolder/tat', async (req, res) => {
   try {
     const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
@@ -383,7 +458,7 @@ app.delete('/api/folders/:dateFolder/tat', async (req, res) => {
 
     if (folder.tat && folder.tat.pictures) {
       for (const pic of folder.tat.pictures) {
-        await deleteStoredFile(pic.url, pic.id);
+        await deleteStoredFile(pic.url, pic.id, 'image');
       }
     }
 
@@ -395,7 +470,7 @@ app.delete('/api/folders/:dateFolder/tat', async (req, res) => {
   }
 });
 
-// 8. DELETE only WAT batch
+// 9. DELETE only WAT batch
 app.delete('/api/folders/:dateFolder/wat', async (req, res) => {
   try {
     const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
@@ -409,7 +484,7 @@ app.delete('/api/folders/:dateFolder/wat', async (req, res) => {
   }
 });
 
-// 9. DELETE single picture from TAT set
+// 10. DELETE single picture from TAT set
 app.delete('/api/folders/:dateFolder/tat/:pictureId', async (req, res) => {
   try {
     const { dateFolder, pictureId } = req.params;
@@ -419,7 +494,7 @@ app.delete('/api/folders/:dateFolder/tat/:pictureId', async (req, res) => {
     }
 
     const pic = folder.tat.pictures.find(p => p.id === pictureId || p._id?.toString() === pictureId);
-    if (pic) await deleteStoredFile(pic.url, pic.id);
+    if (pic) await deleteStoredFile(pic.url, pic.id, 'image');
 
     folder.tat.pictures = folder.tat.pictures.filter(
       p => p.id !== pictureId && p._id?.toString() !== pictureId
@@ -431,12 +506,360 @@ app.delete('/api/folders/:dateFolder/tat/:pictureId', async (req, res) => {
   }
 });
 
+// 11. Upload Solution PDF for a test
+app.post('/api/folders/:dateFolder/solutions',
+  (req, res, next) => {
+    memoryUpload.single('file')(req, res, (err) => {
+      if (err) return res.status(400).json({ error: `Upload error: ${err.message}` });
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const { dateFolder } = req.params;
+      const { solutionDate, testType, title } = req.body;
+      if (!req.file) return res.status(400).json({ error: 'PDF file is required' });
+
+      let folder = await DateFolder.findOne({ dateFolder });
+      if (!folder) {
+        folder = new DateFolder({
+          dateFolder,
+          folderTitle: `Batch ${dateFolder}`,
+          tat: { pictures: [] },
+          wat: { words: [] },
+          solutions: [],
+          lecturettes: []
+        });
+      }
+
+      const solId = 'sol-' + Date.now();
+      const sDate = solutionDate || dateFolder || new Date().toISOString().split('T')[0];
+      const solTitle = title || sDate;
+
+      // 1. Always save a local copy in uploads/solutions/ so server can stream it directly
+      const localFilename = `${solId}.pdf`;
+      fs.writeFileSync(path.join(solutionsDir, localFilename), req.file.buffer);
+
+      // 2. Also upload to Cloudinary for cloud backup and page rendering
+      let fileId = localFilename;
+      let cloudUrl = null;
+      if (cloudinary) {
+        try {
+          const result = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname, 'ssb-psych-prep/solutions', 'auto');
+          fileId = result.public_id;
+          cloudUrl = result.secure_url;
+        } catch (cErr) {
+          console.warn('Cloudinary upload warning:', cErr.message);
+        }
+      }
+
+      const fileProxyUrl = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solId)}/file`;
+
+      const newSolution = {
+        id: solId,
+        solutionDate: sDate,
+        title: solTitle,
+        testType: testType || 'TAT',
+        url: fileProxyUrl,
+        cloudinaryUrl: cloudUrl,
+        localPath: localFilename,
+        publicId: fileId,
+        originalName: req.file.originalname,
+        size: req.file.size,
+        uploadedAt: new Date()
+      };
+
+      if (!folder.solutions) folder.solutions = [];
+      folder.solutions.unshift(newSolution);
+      await folder.save();
+
+      res.json({ success: true, message: 'Solution PDF uploaded', solution: newSolution, folder });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// 12. Stream or download solution PDF directly from server (avoids Cloudinary 401 ACL error!)
+app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) => {
+  try {
+    const { dateFolder, solutionId } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder || !folder.solutions) return res.status(404).json({ error: 'Folder not found' });
+
+    const solution = folder.solutions.find(s => s.id === solutionId || s._id?.toString() === solutionId);
+    if (!solution) return res.status(404).json({ error: 'Solution not found' });
+
+    const download = req.query.download === 'true';
+    const filename = solution.originalName || `${solution.title || 'solution'}.pdf`;
+
+    // 1. Check if local file exists by localPath
+    if (solution.localPath) {
+      const localFullPath = path.join(solutionsDir, solution.localPath);
+      if (fs.existsSync(localFullPath)) {
+        if (download) return res.download(localFullPath, filename);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        return fs.createReadStream(localFullPath).pipe(res);
+      }
+    }
+
+    // 2. Check by solutionId or publicId
+    const candidateFiles = [
+      path.join(solutionsDir, `${solution.id}.pdf`),
+      path.join(solutionsDir, `${solution.publicId ? solution.publicId.split('/').pop() : ''}.pdf`)
+    ];
+    for (const cPath of candidateFiles) {
+      if (cPath && fs.existsSync(cPath)) {
+        if (download) return res.download(cPath, filename);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        return fs.createReadStream(cPath).pipe(res);
+      }
+    }
+
+    // 3. Fallback: If on Cloudinary, fetch page images and reconstruct PDF
+    if (cloudinary && solution.publicId) {
+      try {
+        const resData = await cloudinary.api.resource(solution.publicId, { pages: true });
+        const numPages = resData.pages || 1;
+        const pdfDoc = await PDFDocument.create();
+        for (let p = 1; p <= numPages; p++) {
+          const pageImgUrl = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/pg_${p}/${solution.publicId}.jpg`;
+          const imgBuf = await fetchBuffer(pageImgUrl);
+          const img = await pdfDoc.embedJpg(imgBuf);
+          const page = pdfDoc.addPage([img.width, img.height]);
+          page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+        }
+        const pdfBytes = await pdfDoc.save();
+        const savedPath = path.join(solutionsDir, `${solution.id}.pdf`);
+        fs.writeFileSync(savedPath, pdfBytes);
+        solution.localPath = `${solution.id}.pdf`;
+        await folder.save();
+
+        if (download) return res.download(savedPath, filename);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        return res.end(Buffer.from(pdfBytes));
+      } catch (reconErr) {
+        console.error('PDF reconstruction error:', reconErr.message);
+      }
+    }
+
+    return res.status(404).json({ error: 'PDF file not available' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12b. Get solution page images
+app.get('/api/folders/:dateFolder/solutions/:solutionId/pages', async (req, res) => {
+  try {
+    const { dateFolder, solutionId } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder || !folder.solutions) return res.status(404).json({ error: 'Folder not found' });
+
+    const solution = folder.solutions.find(s => s.id === solutionId || s._id?.toString() === solutionId);
+    if (!solution) return res.status(404).json({ error: 'Solution not found' });
+
+    if (cloudinary && solution.publicId) {
+      const resData = await cloudinary.api.resource(solution.publicId, { pages: true });
+      const numPages = resData.pages || 1;
+      const pages = [];
+      for (let p = 1; p <= numPages; p++) {
+        pages.push(`https://res.cloudinary.com/${CLOUD_NAME}/image/upload/pg_${p}/${solution.publicId}.jpg`);
+      }
+      return res.json({ pages, count: numPages });
+    }
+    return res.json({ pages: [], count: 0 });
+  } catch (err) {
+    res.json({ pages: [], count: 0 });
+  }
+});
+
+// 13. Update / replace solution PDF
+app.put('/api/folders/:dateFolder/solutions/:solutionId',
+  (req, res, next) => {
+    memoryUpload.single('file')(req, res, (err) => {
+      if (err) return res.status(400).json({ error: `Upload error: ${err.message}` });
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const { dateFolder, solutionId } = req.params;
+      const { solutionDate, testType, title } = req.body;
+
+      const folder = await DateFolder.findOne({ dateFolder });
+      if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+      const solution = folder.solutions?.find(s => s.id === solutionId || s._id?.toString() === solutionId);
+      if (!solution) return res.status(404).json({ error: 'Solution not found' });
+
+      if (solutionDate) solution.solutionDate = solutionDate;
+      if (title !== undefined) solution.title = title || solutionDate || solution.solutionDate;
+      if (testType) solution.testType = testType;
+
+      if (req.file) {
+        // Delete old file
+        await deleteStoredFile(solution.cloudinaryUrl || solution.url, solution.publicId, 'raw');
+        if (solution.localPath) {
+          const oldLocal = path.join(solutionsDir, solution.localPath);
+          if (fs.existsSync(oldLocal)) fs.unlinkSync(oldLocal);
+        }
+
+        // Save new file locally
+        const newLocalName = `${solution.id}.pdf`;
+        fs.writeFileSync(path.join(solutionsDir, newLocalName), req.file.buffer);
+        solution.localPath = newLocalName;
+
+        // Upload to Cloudinary
+        if (cloudinary) {
+          try {
+            const result = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname, 'ssb-psych-prep/solutions', 'auto');
+            solution.publicId = result.public_id;
+            solution.cloudinaryUrl = result.secure_url;
+          } catch (cErr) {
+            console.warn('Cloudinary upload error:', cErr.message);
+          }
+        }
+        solution.url = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`;
+        solution.originalName = req.file.originalname;
+        solution.size = req.file.size;
+        solution.uploadedAt = new Date();
+      }
+
+      await folder.save();
+      res.json({ success: true, message: 'Solution updated', solution, folder });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// 14. DELETE solution PDF
+app.delete('/api/folders/:dateFolder/solutions/:solutionId', async (req, res) => {
+  try {
+    const { dateFolder, solutionId } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const solution = folder.solutions?.find(s => s.id === solutionId || s._id?.toString() === solutionId);
+    if (solution) {
+      await deleteStoredFile(solution.cloudinaryUrl || solution.url, solution.publicId, 'raw');
+      if (solution.localPath) {
+        const localPath = path.join(solutionsDir, solution.localPath);
+        if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+      }
+    }
+
+    folder.solutions = (folder.solutions || []).filter(
+      s => s.id !== solutionId && s._id?.toString() !== solutionId
+    );
+    await folder.save();
+    res.json({ success: true, message: 'Solution deleted', folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 14. Upload live lecturette video
+app.post('/api/folders/:dateFolder/lecturette',
+  (req, res, next) => {
+    memoryUpload.single('video')(req, res, (err) => {
+      if (err) return res.status(400).json({ error: `Upload error: ${err.message}` });
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const { dateFolder } = req.params;
+      const { title, duration } = req.body;
+      if (!req.file) return res.status(400).json({ error: 'Video file is required' });
+
+      let folder = await DateFolder.findOne({ dateFolder });
+      if (!folder) {
+        folder = new DateFolder({
+          dateFolder,
+          folderTitle: `Batch ${dateFolder}`,
+          tat: { pictures: [] },
+          wat: { words: [] },
+          solutions: [],
+          lecturettes: []
+        });
+      }
+
+      let url, fileId;
+      if (cloudinary) {
+        const result = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname, 'ssb-psych-prep/lecturettes', 'video');
+        url = result.secure_url;
+        fileId = result.public_id;
+      } else {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        const ext = path.extname(req.file.originalname) || '.webm';
+        const filename = 'lecturette-' + uniqueSuffix + ext;
+        fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
+        url = `/uploads/${filename}`;
+        fileId = filename;
+      }
+
+      const newLecturette = {
+        id: 'lec-' + Date.now(),
+        title: title || `Lecturette ${dateFolder}`,
+        duration: Number(duration) || 0,
+        url,
+        publicId: fileId,
+        recordedAt: new Date()
+      };
+
+      if (!folder.lecturettes) folder.lecturettes = [];
+      folder.lecturettes.unshift(newLecturette);
+      await folder.save();
+
+      res.json({ success: true, message: 'Lecturette video saved', lecturette: newLecturette, folder });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// 15. DELETE lecturette video
+app.delete('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res) => {
+  try {
+    const { dateFolder, lecturetteId } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const lecturette = folder.lecturettes?.find(l => l.id === lecturetteId || l._id?.toString() === lecturetteId);
+    if (lecturette) {
+      await deleteStoredFile(lecturette.url, lecturette.publicId, 'video');
+    }
+
+    folder.lecturettes = (folder.lecturettes || []).filter(
+      l => l.id !== lecturetteId && l._id?.toString() !== lecturetteId
+    );
+    await folder.save();
+    res.json({ success: true, message: 'Lecturette video deleted', folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Helper: delete a file from Cloudinary or local disk ──────────────────────
-async function deleteStoredFile(url, publicId) {
+async function deleteStoredFile(url, publicId, resourceType = 'image') {
   try {
     if (cloudinary && url && url.startsWith('http')) {
-      // Cloudinary — publicId is stored in the `id` field
-      if (publicId) await cloudinary.uploader.destroy(publicId);
+      if (publicId) {
+        try {
+          await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+        } catch (destroyErr) {
+          if (resourceType === 'raw') {
+            await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+          } else if (resourceType === 'image') {
+            await cloudinary.uploader.destroy(publicId, { resource_type: 'raw' });
+          }
+        }
+      }
     } else if (url && url.startsWith('/uploads/')) {
       const filePath = path.join(__dirname, '..', url);
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);

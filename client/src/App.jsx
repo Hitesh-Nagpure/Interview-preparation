@@ -4,6 +4,8 @@ import Dashboard from './components/Dashboard';
 import DateFoldersView from './components/DateFoldersView';
 import UploadView from './components/UploadView';
 import TestSimulator from './components/TestSimulator';
+import LecturetteRecorder from './components/LecturetteRecorder';
+import SolutionsView from './components/SolutionsView';
 import { soundEngine } from './utils/audio';
 
 export default function App() {
@@ -163,6 +165,19 @@ export default function App() {
               <UploadView
                 initialDateFolder={initialUploadDate}
                 onUploadSuccess={() => { fetchFolders(); setActiveTab('folders'); }}
+                onRefresh={fetchFolders}
+                onNavigate={handleNavigate}
+              />
+            )}
+            {activeTab === 'solutions' && (
+              <SolutionsView
+                folders={folders}
+                onRefresh={fetchFolders}
+              />
+            )}
+            {activeTab === 'lecturette' && (
+              <LecturetteRecorder
+                folders={folders}
                 onRefresh={fetchFolders}
                 onNavigate={handleNavigate}
               />

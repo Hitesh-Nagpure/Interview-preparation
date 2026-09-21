@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   Shield, Folder, Upload, Play, Sun, Moon,
-  Volume2, VolumeX, Bell, Menu, X
+  Volume2, VolumeX, Bell, Menu, X, Video, FileText
 } from 'lucide-react';
 
 export default function Navbar({ activeTab, setActiveTab, isMuted, toggleMute, onTestAudio, dbConnected, isDark, toggleTheme }) {
@@ -9,9 +9,10 @@ export default function Navbar({ activeTab, setActiveTab, isMuted, toggleMute, o
   const [menuOpen, setMenuOpen] = useState(false);
 
   const tabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: Play },
-    { id: 'folders',   label: 'Folders',   icon: Folder },
-    { id: 'upload',    label: 'Upload',    icon: Upload },
+    { id: 'dashboard',  label: 'Dashboard',   icon: Play },
+    { id: 'upload',     label: 'Uploads',     icon: Upload },
+    { id: 'lecturette', label: 'Lecturette',  icon: Video },
+    { id: 'folders',    label: 'Folders',     icon: Folder },
   ];
 
   const handleTabClick = (id) => {

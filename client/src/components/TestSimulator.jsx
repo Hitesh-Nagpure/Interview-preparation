@@ -225,12 +225,20 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
               <Shield className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-800 dark:text-white">
-                {testTypeProp === 'PSYCH'
-                  ? `Full Psych Test — Phase ${psychPhase === 'TAT' ? '1' : '2'}: ${psychPhase === 'TAT' ? 'TAT' : 'WAT'}`
-                  : testType === 'TAT' ? 'Thematic Apperception Test' : 'Word Association Test'}
+              <div className="flex items-center gap-2 mb-1">
+                <span className={testType === 'TAT' ? 'badge-tat' : 'badge-wat'}>
+                  {testType}
+                </span>
+                {testTypeProp === 'PSYCH' && (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-violet-500/10 text-violet-500 border border-violet-500/20">
+                    Phase {psychPhase === 'TAT' ? '1/2' : '2/2'}
+                  </span>
+                )}
+              </div>
+              <h2 className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">
+                {testType === 'TAT' ? 'Thematic Apperception Test' : 'Word Association Test'}
               </h2>
-              <p className="text-xs text-slate-400 font-mono">{dateFolder} · {items.length} {testType === 'TAT' ? 'pictures' : 'words'}</p>
+              <p className="text-xs text-slate-400 font-mono mt-0.5">{dateFolder} · {items.length} {testType === 'TAT' ? 'pictures' : 'words'}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -307,9 +315,9 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
         {/* Start */}
         <button
           onClick={startSimulation}
-          className="w-full py-3 btn-primary flex items-center justify-center gap-2 text-base"
+          className="w-full py-2 btn-primary flex items-center justify-center gap-1.5 text-xs font-semibold"
         >
-          <Play className="w-5 h-5 fill-current" />
+          <Play className="w-3.5 h-3.5 fill-current" />
           Begin Simulation
         </button>
       </div>
@@ -321,13 +329,15 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
     <div className="min-h-screen bg-light-50 dark:bg-dark-950 flex items-start justify-center py-10 px-4">
       <div className="card w-full max-w-lg p-6 space-y-5">
         <div className="text-center space-y-2">
-          <div className="w-14 h-14 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500 mx-auto">
-            <CheckCircle2 className="w-7 h-7" />
+          <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500 mx-auto">
+            <CheckCircle2 className="w-6 h-6" />
           </div>
-          <h2 className="text-xl font-bold text-slate-800 dark:text-white">Test Completed</h2>
+          <div className="flex items-center justify-center gap-2">
+            <span className={testType === 'TAT' ? 'badge-tat' : 'badge-wat'}>{testType}</span>
+            <h2 className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">Test Completed</h2>
+          </div>
           <p className="text-xs text-slate-400">
-            <span className={testType === 'TAT' ? 'badge-indigo' : 'badge-cyan'}>{testType}</span>
-            {' '}&nbsp;{items.length} items · {dateFolder}
+            {items.length} items · {dateFolder}
           </p>
         </div>
 
@@ -354,7 +364,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
           )}
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex gap-2">
           <button
             onClick={() => {
               // For PSYCH retake, restart from TAT
@@ -366,11 +376,11 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
                 setStatus('BRIEFING');
               }
             }}
-            className="flex-1 btn-secondary flex items-center justify-center gap-1.5"
+            className="btn-secondary px-4 py-1.5 text-xs flex items-center justify-center gap-1.5"
           >
             <RotateCcw className="w-3.5 h-3.5" /> Retake
           </button>
-          <button onClick={onExit} className="flex-1 btn-primary">Back to Dashboard</button>
+          <button onClick={onExit} className="btn-primary px-4 py-1.5 text-xs">Back to Dashboard</button>
         </div>
       </div>
     </div>
@@ -387,6 +397,9 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
       {/* Minimal HUD bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 dark:border-white/10 bg-white dark:bg-black">
         <div className="flex items-center gap-2">
+          <span className={`text-xs font-black font-mono tracking-wider ${testType === 'TAT' ? 'text-indigo-600 dark:text-indigo-400' : 'text-cyan-600 dark:text-cyan-400'}`}>
+            {testType}
+          </span>
           {testType === 'TAT' ? (
             <span className={`w-2 h-2 rounded-full ${tatPhase === 'OBSERVE' ? 'bg-indigo-500' : 'bg-amber-500'}`} />
           ) : (
