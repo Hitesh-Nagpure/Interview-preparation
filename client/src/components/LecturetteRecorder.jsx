@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   Video, VideoOff, Mic, MicOff, Play, Pause, Square, RotateCcw,
   Upload, Trash2, CheckCircle2, AlertCircle, Calendar, Film, X,
-  Volume2, VolumeX, Maximize2, Edit3, Check
+  Volume2, VolumeX, Maximize2, Edit3, Check, Bell, Clock, Download
 } from 'lucide-react';
 import CustomVideoPlayer from './CustomVideoPlayer';
+import { soundEngine } from '../utils/audio';
 
 function formatTime(secs) {
   if (isNaN(secs) || secs === Infinity || secs < 0) return '00:00';
@@ -22,13 +23,34 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const [lecEditSaving, setLecEditSaving] = useState(false);
   const [stream, setStream] = useState(null);
   const [cameraActive, setCameraActive] = useState(false);
-  const [recordingStatus, setRecordingStatus] = useState('IDLE'); // 'IDLE', 'RECORDING', 'PAUSED', 'STOPPED'
+  const [recordingStatus, setRecordingStatus] = useState('IDLE'); // 'IDLE', 'COUNTDOWN', 'RECORDING', 'PAUSED', 'STOPPED'
   const [recordedBlob, setRecordedBlob] = useState(null);
   const [recordedUrl, setRecordedUrl] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null); // 0-100%
   const [uploadSuccess, setUploadSuccess] = useState(null);
   const [error, setError] = useState(null);
   const [playingVideo, setPlayingVideo] = useState(null); // { url, title, duration }
+
+  // Wait time and SSB Bells configuration
+  const [waitTime, setWaitTime] = useState(() => {
+    try {
+      const saved = localStorage.getItem('ssb_lecturette_wait_time');
+      if (saved !== null && ['0', '3', '5', '10'].includes(saved)) {
+        return parseInt(saved, 10);
+      }
+    } catch (e) {}
+    return 5; // default 5 seconds
+  });
+  const [countdown, setCountdown] = useState(null);
+  const [ssbBellsEnabled, setSsbBellsEnabled] = useState(true);
+  const [bellAlertNotification, setBellAlertNotification] = useState(null); // { title, text } | null
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
+  const countdownIntervalRef = useRef(null);
+  const singleBellFiredRef = useRef(false);
+  const doubleBellFiredRef = useRef(false);
+  const bellIntervalRef = useRef(null);
+  const bellToastTimerRef = useRef(null);
 
   // Custom playback controls state for review
   const [isPlaying, setIsPlaying] = useState(false);
@@ -115,6 +137,9 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     return () => {
       stopCamera();
       if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      if (bellIntervalRef.current) clearInterval(bellIntervalRef.current);
+      if (bellToastTimerRef.current) clearTimeout(bellToastTimerRef.current);
     };
   }, []);
 
@@ -125,8 +150,58 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
   }, [cameraActive, recordingStatus, stream]);
 
-  // Start recording
-  const handleStartRecording = () => {
+  const handleWaitTimeChange = (sec) => {
+    setWaitTime(sec);
+    try {
+      localStorage.setItem('ssb_lecturette_wait_time', sec.toString());
+    } catch (e) {}
+  };
+
+  const handleInitiateRecording = () => {
+    if (!stream) {
+      setError('Please enable camera before recording.');
+      return;
+    }
+    setError(null);
+    setUploadSuccess(null);
+
+    if (waitTime === 0) {
+      executeStartRecording();
+      return;
+    }
+
+    setRecordingStatus('COUNTDOWN');
+    setCountdown(waitTime);
+    soundEngine.playCountdownTick(false);
+
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    countdownIntervalRef.current = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
+          soundEngine.playCountdownTick(true);
+          setCountdown(null);
+          executeStartRecording();
+          return null;
+        }
+        soundEngine.playCountdownTick(false);
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const handleCancelCountdown = () => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    setCountdown(null);
+    setRecordingStatus('IDLE');
+  };
+
+  // Execute recording start with optimized bitrate and SSB bell listener
+  const executeStartRecording = () => {
     if (!stream) {
       setError('Please enable camera before recording.');
       return;
@@ -135,6 +210,10 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     setUploadSuccess(null);
     chunksRef.current = [];
     totalDurationRef.current = 0;
+    setRecordingElapsed(0);
+    singleBellFiredRef.current = false;
+    doubleBellFiredRef.current = false;
+    setBellAlertNotification(null);
     startTimeRef.current = Date.now();
 
     // Select supported mimeType
@@ -153,7 +232,14 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
 
     try {
-      const options = selectedMimeType ? { mimeType: selectedMimeType } : undefined;
+      // Optimize bitrate to 1.2 Mbps (drops size by ~85% for lightning-fast Cloudinary upload)
+      const options = {
+        videoBitsPerSecond: 1_200_000,
+        audioBitsPerSecond: 128_000
+      };
+      if (selectedMimeType) {
+        options.mimeType = selectedMimeType;
+      }
       const mr = new MediaRecorder(stream, options);
 
       mr.ondataavailable = (e) => {
@@ -171,11 +257,46 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         setIsPlaying(false);
         setCurrentTime(0);
         setVideoDuration(totalDurationRef.current || 0);
+        if (bellIntervalRef.current) {
+          clearInterval(bellIntervalRef.current);
+          bellIntervalRef.current = null;
+        }
       };
 
       mr.start(1000); // 1-second chunks
       mediaRecorderRef.current = mr;
       setRecordingStatus('RECORDING');
+
+      // Start Bell tracking interval (Single bell at 2m 30s / 150s, Double bell at 3m 00s / 180s)
+      if (bellIntervalRef.current) clearInterval(bellIntervalRef.current);
+      bellIntervalRef.current = setInterval(() => {
+        const elapsed = totalDurationRef.current + Math.round((Date.now() - startTimeRef.current) / 1000);
+        setRecordingElapsed(elapsed);
+
+        // 1. Single Bell at 2m 30s (150 seconds elapsed, 30s remaining)
+        if (elapsed >= 150 && !singleBellFiredRef.current) {
+          singleBellFiredRef.current = true;
+          if (ssbBellsEnabled) soundEngine.playSingleBell();
+          setBellAlertNotification({
+            title: '30 Seconds Remaining',
+            text: 'Single Bell (2m 30s) — Please conclude your speech.'
+          });
+          if (bellToastTimerRef.current) clearTimeout(bellToastTimerRef.current);
+          bellToastTimerRef.current = setTimeout(() => setBellAlertNotification(null), 4500);
+        }
+
+        // 2. Double Bell at 3m 00s (180 seconds elapsed, time complete)
+        if (elapsed >= 180 && !doubleBellFiredRef.current) {
+          doubleBellFiredRef.current = true;
+          if (ssbBellsEnabled) soundEngine.playDoubleBell();
+          setBellAlertNotification({
+            title: 'Lecturette Time Complete',
+            text: 'Double Bell (3m 00s) — Lecturette time is up.'
+          });
+          if (bellToastTimerRef.current) clearTimeout(bellToastTimerRef.current);
+          bellToastTimerRef.current = setTimeout(() => setBellAlertNotification(null), 5000);
+        }
+      }, 1000);
     } catch (err) {
       setError('Could not start recording: ' + err.message);
     }
@@ -186,6 +307,11 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.pause();
       totalDurationRef.current += Math.round((Date.now() - startTimeRef.current) / 1000);
+      setRecordingElapsed(totalDurationRef.current);
+      if (bellIntervalRef.current) {
+        clearInterval(bellIntervalRef.current);
+        bellIntervalRef.current = null;
+      }
       setRecordingStatus('PAUSED');
     }
   };
@@ -196,16 +322,83 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       mediaRecorderRef.current.resume();
       startTimeRef.current = Date.now();
       setRecordingStatus('RECORDING');
+
+      if (bellIntervalRef.current) clearInterval(bellIntervalRef.current);
+      bellIntervalRef.current = setInterval(() => {
+        const elapsed = totalDurationRef.current + Math.round((Date.now() - startTimeRef.current) / 1000);
+        setRecordingElapsed(elapsed);
+
+        if (elapsed >= 150 && !singleBellFiredRef.current) {
+          singleBellFiredRef.current = true;
+          if (ssbBellsEnabled) soundEngine.playSingleBell();
+          setBellAlertNotification({
+            title: '30 Seconds Remaining',
+            text: 'Single Bell (2m 30s) — Please conclude your speech.'
+          });
+          if (bellToastTimerRef.current) clearTimeout(bellToastTimerRef.current);
+          bellToastTimerRef.current = setTimeout(() => setBellAlertNotification(null), 4500);
+        }
+
+        if (elapsed >= 180 && !doubleBellFiredRef.current) {
+          doubleBellFiredRef.current = true;
+          if (ssbBellsEnabled) soundEngine.playDoubleBell();
+          setBellAlertNotification({
+            title: 'Lecturette Time Complete',
+            text: 'Double Bell (3m 00s) — Lecturette time is up.'
+          });
+          if (bellToastTimerRef.current) clearTimeout(bellToastTimerRef.current);
+          bellToastTimerRef.current = setTimeout(() => setBellAlertNotification(null), 5000);
+        }
+      }, 1000);
     }
   };
 
   // Stop recording
   const handleStopRecording = () => {
+    if (bellIntervalRef.current) {
+      clearInterval(bellIntervalRef.current);
+      bellIntervalRef.current = null;
+    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       if (recordingStatus === 'RECORDING') {
         totalDurationRef.current += Math.round((Date.now() - startTimeRef.current) / 1000);
       }
       mediaRecorderRef.current.stop();
+    }
+  };
+
+  const handleDownloadRecorded = () => {
+    if (!recordedBlob) return;
+    try {
+      const a = document.createElement('a');
+      const ext = recordedBlob.type.includes('mp4') ? '.mp4' : '.webm';
+      const filename = (recTitle || `lecturette-${recDate || selectedFolder}`).replace(/[^a-zA-Z0-9_-]/g, '_') + ext;
+      a.href = recordedUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      console.warn('Download error:', e);
+    }
+  };
+
+  const handleDownloadUrl = (url, title) => {
+    if (!url) return;
+    try {
+      let dlUrl = url;
+      if (url.includes('cloudinary.com') && url.includes('/upload/')) {
+        dlUrl = url.replace('/upload/', '/upload/fl_attachment/');
+      }
+      const a = document.createElement('a');
+      a.href = dlUrl;
+      a.target = '_blank';
+      a.download = (title || 'lecturette-video').replace(/[^a-zA-Z0-9_-]/g, '_');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      window.open(url, '_blank');
     }
   };
 
@@ -296,6 +489,22 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
 
   // Discard & retake
   const handleRetake = () => {
+    if (bellIntervalRef.current) {
+      clearInterval(bellIntervalRef.current);
+      bellIntervalRef.current = null;
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    if (bellToastTimerRef.current) {
+      clearTimeout(bellToastTimerRef.current);
+      bellToastTimerRef.current = null;
+    }
+    setBellAlertNotification(null);
+    setRecordingElapsed(0);
+    singleBellFiredRef.current = false;
+    doubleBellFiredRef.current = false;
     if (playbackVideoRef.current) {
       playbackVideoRef.current.pause();
     }
@@ -304,6 +513,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     setRecordedUrl(null);
     setRecordingStatus('IDLE');
     setUploadSuccess(null);
+    setUploadProgress(null);
     setIsPlaying(false);
     setCurrentTime(0);
     setVideoDuration(0);
@@ -319,10 +529,11 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
   }, [selectedFolder]);
 
-  // Upload to Cloudinary
+  // Upload to Cloudinary with real-time progress
   const handleSaveToCloudinary = async () => {
     if (!recordedBlob) return;
     setUploading(true);
+    setUploadProgress(0);
     setError(null);
     try {
       const fd = new FormData();
@@ -335,12 +546,34 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       fd.append('recordedDate', targetFolder);
       fd.append('duration', totalDurationRef.current.toString());
 
-      const res = await fetch(`/api/folders/${encodeURIComponent(targetFolder)}/lecturette`, {
-        method: 'POST',
-        body: fd
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `/api/folders/${encodeURIComponent(targetFolder)}/lecturette`);
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            setUploadProgress(pct);
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText));
+            } catch {
+              resolve({});
+            }
+          } else {
+            try {
+              const errData = JSON.parse(xhr.responseText);
+              reject(new Error(errData.error || 'Failed to upload video'));
+            } catch {
+              reject(new Error(`Upload failed with HTTP ${xhr.status}`));
+            }
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network error while uploading video'));
+        xhr.send(fd);
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to upload video');
 
       setUploadSuccess(`Lecturette "${targetTitle}" saved successfully to Cloudinary!`);
       if (onRefresh) onRefresh();
@@ -348,6 +581,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       setError(err.message);
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -483,33 +717,80 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   </button>
                 </div>
               )}
-              {/* Recording Indicator (subtle red dot, no timer text on screen) */}
+              {/* Countdown Overlay */}
+              {recordingStatus === 'COUNTDOWN' && (
+                <div className="absolute inset-0 bg-black/75 backdrop-blur-sm flex flex-col items-center justify-center z-30 animate-fadeIn select-none">
+                  <div className="relative flex items-center justify-center">
+                    <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin absolute" />
+                    <span className="text-5xl sm:text-6xl font-black text-white font-mono drop-shadow-xl animate-pulse">
+                      {countdown}
+                    </span>
+                  </div>
+                  <p className="text-sm font-semibold text-slate-200 mt-4 tracking-wide">
+                    Get Ready! Recording starts in {countdown}s...
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleCancelCountdown}
+                    className="mt-4 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-md text-xs border border-slate-700 flex items-center gap-1 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" /> Cancel
+                  </button>
+                </div>
+              )}
+
+              {/* Bell Alert Toast / Banner */}
+              {bellAlertNotification && (
+                <div className="absolute top-4 inset-x-4 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 flex items-center gap-2.5 px-4 py-2 rounded-xl backdrop-blur-md shadow-2xl border transition-all z-20 animate-bounce bg-amber-500/95 border-amber-300 text-slate-950 font-sans">
+                  <Bell className="w-4 h-4 fill-current text-slate-950 shrink-0" />
+                  <div className="text-xs font-bold leading-tight">
+                    <div>{bellAlertNotification.title}</div>
+                    <div className="text-[11px] font-medium opacity-90">{bellAlertNotification.text}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Recording Indicator + Elapsed Time */}
               {recordingStatus === 'RECORDING' && (
-                <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-md px-2.5 py-1 rounded-full border border-red-500/40">
+                <div className="absolute top-4 left-4 flex items-center gap-2.5 bg-black/70 backdrop-blur-md px-3 py-1 rounded-full border border-red-500/50 z-20">
                   <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
                   <span className="text-[11px] font-bold text-red-400 uppercase tracking-widest font-mono">
-                    Recording
+                    REC
+                  </span>
+                  <span className="text-xs font-mono font-bold text-white pl-1 border-l border-white/20">
+                    {formatTime(recordingElapsed)}
                   </span>
                 </div>
               )}
               {recordingStatus === 'PAUSED' && (
-                <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-md px-2.5 py-1 rounded-full border border-amber-500/40">
+                <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/70 backdrop-blur-md px-3 py-1 rounded-full border border-amber-500/50 z-20">
                   <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
                   <span className="text-[11px] font-bold text-amber-300 uppercase tracking-widest font-mono">
-                    Paused
+                    PAUSED ({formatTime(recordingElapsed)})
                   </span>
                 </div>
               )}
             </>
           ) : (
-            /* Custom Recorded Video Review Player with Blue Controls & Red Buttons */
+            /* Custom Recorded Video Review Player with Blue Controls & Blue Buttons */
             <CustomVideoPlayer
               src={recordedUrl}
               fallbackDuration={totalDurationRef.current}
+              downloadFilename={(recTitle || `lecturette-${recDate || selectedFolder}`).replace(/[^a-zA-Z0-9_-]/g, '_')}
               className="w-full h-full"
             />
           )}
         </div>
+
+        {/* Upload Progress Bar when uploading */}
+        {uploading && uploadProgress !== null && (
+          <div className="w-full bg-slate-800 h-1.5 overflow-hidden">
+            <div
+              className="bg-blue-500 h-full transition-all duration-200"
+              style={{ width: `${uploadProgress}%` }}
+            />
+          </div>
+        )}
 
         {/* Studio Controls Bar */}
         <div className="px-3 sm:px-4 py-3 bg-slate-950 border-t border-slate-800 flex flex-col gap-3">
@@ -550,7 +831,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
               {cameraActive ? (
                 <button
                   onClick={stopCamera}
-                  disabled={recordingStatus === 'RECORDING'}
+                  disabled={recordingStatus === 'RECORDING' || recordingStatus === 'COUNTDOWN'}
                   className="p-1.5 rounded-md bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-30"
                   title="Turn off camera"
                 >
@@ -568,15 +849,48 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
             </div>
 
             {/* Center: Recording Action Controls */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {recordingStatus === 'IDLE' && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Countdown Timer Selector (0s, 3s, 5s, 10s) */}
+                  <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-md px-2 py-1">
+                    <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                    <span className="text-[11px] text-slate-400 font-medium">Timer:</span>
+                    {[0, 3, 5, 10].map(sec => (
+                      <button
+                        key={sec}
+                        type="button"
+                        onClick={() => handleWaitTimeChange(sec)}
+                        className={`px-2 py-0.5 text-[11px] font-mono rounded transition-colors ${
+                          waitTime === sec
+                            ? 'bg-blue-600 text-white font-bold shadow-sm'
+                            : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                        }`}
+                        title={`${sec} seconds countdown before recording`}
+                      >
+                        {sec}s
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={handleInitiateRecording}
+                    disabled={!cameraActive}
+                    className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 text-xs flex items-center gap-1.5 disabled:opacity-40"
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-white" />
+                    <span>Start Recording</span>
+                  </button>
+                </div>
+              )}
+
+              {recordingStatus === 'COUNTDOWN' && (
                 <button
-                  onClick={handleStartRecording}
-                  disabled={!cameraActive}
-                  className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 text-xs flex items-center gap-1.5 disabled:opacity-40"
+                  onClick={handleCancelCountdown}
+                  className="btn-secondary bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700 px-3 py-1.5 text-xs flex items-center gap-1"
                 >
-                  <span className="w-2.5 h-2.5 rounded-full bg-white" />
-                  <span>Start Recording</span>
+                  <X className="w-3.5 h-3.5" />
+                  <span>Cancel Countdown ({countdown}s)</span>
                 </button>
               )}
 
@@ -628,12 +942,24 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                     <span>Retake</span>
                   </button>
                   <button
+                    onClick={handleDownloadRecorded}
+                    className="btn-secondary bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 px-3 py-1 text-xs flex items-center gap-1"
+                    title="Download recorded video to your computer"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>Download</span>
+                  </button>
+                  <button
                     onClick={handleSaveToCloudinary}
                     disabled={uploading}
                     className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-3.5 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
                   >
                     <Upload className="w-3 h-3" />
-                    <span>{uploading ? 'Saving...' : 'Save'}</span>
+                    <span>
+                      {uploading
+                        ? (uploadProgress !== null ? `Uploading (${uploadProgress}%)...` : 'Saving...')
+                        : 'Save'}
+                    </span>
                   </button>
                 </>
               )}
@@ -671,7 +997,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                 >
                   <video src={lec.url} className="w-full h-full object-cover" />
                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                    <div className="w-8 h-8 rounded-full bg-white/90 text-slate-900 flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
+                    <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
                       <Play className="w-4 h-4 fill-current" />
                     </div>
                   </div>
@@ -687,6 +1013,13 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                     </p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => handleDownloadUrl(lec.url, lec.title)}
+                      className="p-1.5 rounded text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+                      title="Download video"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                    </button>
                     <button
                       onClick={() => setEditingLecturette({ id: lec.id, folderDate: lec.folderDate, title: lec.title || '', recordedDate: lec.recordedDate || lec.folderDate })}
                       className="p-1.5 rounded text-slate-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10 transition-colors"
@@ -715,17 +1048,28 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
           <div className="bg-slate-900 border border-slate-700 rounded-xl overflow-hidden max-w-2xl w-full shadow-2xl space-y-2">
             <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 text-slate-200">
               <span className="text-xs font-bold truncate">{playingVideo.title}</span>
-              <button
-                onClick={() => setPlayingVideo(null)}
-                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleDownloadUrl(playingVideo.url, playingVideo.title)}
+                  className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs flex items-center gap-1 transition-colors"
+                  title="Download video"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>Download</span>
+                </button>
+                <button
+                  onClick={() => setPlayingVideo(null)}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="p-3">
               <CustomVideoPlayer
                 src={playingVideo.url}
                 autoPlay={true}
+                downloadFilename={(playingVideo.title || 'lecturette-video').replace(/[^a-zA-Z0-9_-]/g, '_')}
                 className="w-full aspect-video rounded bg-black"
               />
             </div>

@@ -9,7 +9,42 @@ import SolutionsView from './components/SolutionsView';
 import { soundEngine } from './utils/audio';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const hash = window.location.hash.replace('#', '').trim();
+      const validTabs = ['dashboard', 'upload', 'lecturette', 'folders', 'solutions'];
+      if (validTabs.includes(hash)) return hash;
+      const saved = localStorage.getItem('ssb_active_tab');
+      if (saved && validTabs.includes(saved)) return saved;
+      return 'dashboard';
+    } catch {
+      return 'dashboard';
+    }
+  });
+
+  // Persist activeTab to localStorage and URL hash
+  useEffect(() => {
+    try {
+      localStorage.setItem('ssb_active_tab', activeTab);
+      window.location.hash = activeTab;
+    } catch (e) {
+      console.warn('Could not save active tab preference:', e);
+    }
+  }, [activeTab]);
+
+  // Sync tab on browser back/forward buttons
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace('#', '').trim();
+      const validTabs = ['dashboard', 'upload', 'lecturette', 'folders', 'solutions'];
+      if (validTabs.includes(hash)) {
+        setActiveTab(hash);
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
   const [folders, setFolders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dbConnected, setDbConnected] = useState(false);

@@ -48,8 +48,16 @@ if (CLOUD_NAME && CLOUD_API_KEY && CLOUD_API_SECRET) {
 // Helper: upload a buffer to Cloudinary, returns the secure_url
 function uploadBufferToCloudinary(buffer, originalname, folder = 'ssb-psych-prep/tat', resourceType = 'auto') {
   return new Promise((resolve, reject) => {
+    const uploadOptions = {
+      folder,
+      resource_type: resourceType,
+      timeout: 120000
+    };
+    if (resourceType === 'video') {
+      uploadOptions.eager_async = true;
+    }
     const stream = cloudinary.uploader.upload_stream(
-      { folder, resource_type: resourceType },
+      uploadOptions,
       (error, result) => {
         if (error) return reject(error);
         resolve(result);
@@ -599,8 +607,12 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
       const localFullPath = path.join(solutionsDir, solution.localPath);
       if (fs.existsSync(localFullPath)) {
         if (download) return res.download(localFullPath, filename);
+        const stat = fs.statSync(localFullPath);
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.setHeader('ETag', `"${solution.id}-${stat.mtimeMs}"`);
         return fs.createReadStream(localFullPath).pipe(res);
       }
     }
@@ -613,8 +625,12 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
     for (const cPath of candidateFiles) {
       if (cPath && fs.existsSync(cPath)) {
         if (download) return res.download(cPath, filename);
+        const stat = fs.statSync(cPath);
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.setHeader('ETag', `"${solution.id}-${stat.mtimeMs}"`);
         return fs.createReadStream(cPath).pipe(res);
       }
     }

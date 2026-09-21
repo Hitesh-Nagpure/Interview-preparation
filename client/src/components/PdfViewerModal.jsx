@@ -20,6 +20,7 @@ export default function PdfViewerModal({
   const [replacementFile, setReplacementFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [iframeLoaded, setIframeLoaded] = useState(false);
 
   // View mode: 'pdf' (iframe) or 'images' (pages)
   const [viewMode, setViewMode] = useState('pdf');
@@ -47,6 +48,11 @@ export default function PdfViewerModal({
       })
       .catch(() => {});
   }, [dateFolder, solution.id]);
+
+  // Reset iframe loader whenever we switch back to PDF view or solution changes
+  useEffect(() => {
+    setIframeLoaded(false);
+  }, [viewMode, solution.id]);
 
   const handleDateChange = (newDate) => {
     setSolutionDate(newDate);
@@ -267,10 +273,30 @@ export default function PdfViewerModal({
           {viewMode === 'pdf' ? (
             /* Streamed PDF Frame */
             <div className="w-full h-full flex flex-col relative">
+              {/* Skeleton loader – visible until iframe fires onLoad */}
+              {!iframeLoaded && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-slate-900">
+                  {/* Animated spinner */}
+                  <div className="w-12 h-12 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
+                  <p className="text-slate-400 text-sm font-medium animate-pulse">Loading PDF…</p>
+                  {/* Shimmer lines mimicking a document */}
+                  <div className="w-64 space-y-2 mt-2">
+                    {[80, 95, 70, 90, 60, 85].map((w, i) => (
+                      <div
+                        key={i}
+                        className="h-2.5 rounded-full bg-slate-700 animate-pulse"
+                        style={{ width: `${w}%`, animationDelay: `${i * 80}ms` }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
               <iframe
                 src={`${fileUrl}#toolbar=1&navpanes=0`}
                 title={`Solution: ${title || solutionDate}`}
                 className="w-full h-full border-none bg-slate-100 dark:bg-dark-950"
+                style={{ opacity: iframeLoaded ? 1 : 0, transition: 'opacity 0.3s ease' }}
+                onLoad={() => setIframeLoaded(true)}
               />
             </div>
           ) : (

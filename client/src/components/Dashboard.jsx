@@ -14,7 +14,7 @@ export default function Dashboard({ folders, onStartTest, onNavigate }) {
 
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-slate-800 dark:text-white">SSB Psych Prep</h1>
+        <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Inteview Preparation</h1>
         <p className="text-xs text-slate-400 mt-1">TAT · WAT · Lecturette · Real-time simulation</p>
       </div>
 

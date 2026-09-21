@@ -37,7 +37,7 @@ export default function Navbar({ activeTab, setActiveTab, isMuted, toggleMute, o
           className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 hover:opacity-80 transition-opacity shrink-0"
         >
           <Shield className="w-5 h-5" />
-          <span className="font-bold text-sm tracking-wide text-slate-800 dark:text-white">SSB Psych</span>
+          <span className="font-bold text-sm tracking-wide text-slate-800 dark:text-white">Inteview Preparation</span>
         </button>
 
         {/* Desktop tabs */}
