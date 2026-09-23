@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   X, Download, Trash2, Edit3, Check, FileText, Upload,
   Calendar, RefreshCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight,
-  Eye, Image as ImageIcon
+  Eye, Image as ImageIcon, AlertTriangle
 } from 'lucide-react';
 
 export default function PdfViewerModal({
@@ -14,13 +14,15 @@ export default function PdfViewerModal({
   onDelete
 }) {
   const [isEditing, setIsEditing] = useState(false);
-  const [solutionDate, setSolutionDate] = useState(solution.solutionDate || dateFolder || '');
-  const [title, setTitle] = useState(solution.title || solution.solutionDate || '');
-  const [testType, setTestType] = useState(solution.testType || 'TAT');
+  const [solutionDate, setSolutionDate] = useState(solution?.solutionDate || dateFolder || '');
+  const [title, setTitle] = useState(solution?.title || solution?.solutionDate || '');
+  const [testType, setTestType] = useState(solution?.testType || 'TAT');
   const [replacementFile, setReplacementFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
+  const [fileAvailable, setFileAvailable] = useState(true);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // View mode: 'pdf' (iframe) or 'images' (pages)
   const [viewMode, setViewMode] = useState('pdf');
@@ -38,6 +40,13 @@ export default function PdfViewerModal({
   const downloadUrl = `${fileUrl}?download=true`;
 
   useEffect(() => {
+    // Check if file is available
+    fetch(fileUrl, { method: 'HEAD' })
+      .then(res => {
+        setFileAvailable(res.ok);
+      })
+      .catch(() => setFileAvailable(false));
+
     // Check if Cloudinary page images are available
     fetch(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/pages`)
       .then(r => r.json())
@@ -47,7 +56,7 @@ export default function PdfViewerModal({
         }
       })
       .catch(() => {});
-  }, [dateFolder, solution.id]);
+  }, [dateFolder, solution.id, fileUrl]);
 
   // Reset iframe loader whenever we switch back to PDF view or solution changes
   useEffect(() => {
@@ -82,6 +91,7 @@ export default function PdfViewerModal({
       if (!res.ok) throw new Error(data.error || 'Failed to update solution');
       setIsEditing(false);
       setReplacementFile(null);
+      setFileAvailable(true);
       if (onUpdate) onUpdate(data.solution, data.folder);
     } catch (err) {
       setError(err.message);
@@ -91,9 +101,7 @@ export default function PdfViewerModal({
   };
 
   const handleDelete = () => {
-    if (window.confirm(`Are you sure you want to delete this solution PDF (${title || solutionDate})?`)) {
-      onDelete(solution.id);
-    }
+    setShowDeleteConfirm(true);
   };
 
   return createPortal(
@@ -271,34 +279,64 @@ export default function PdfViewerModal({
         {/* Content Viewer Area */}
         <div className="flex-1 w-full h-full bg-slate-900 relative overflow-hidden flex flex-col">
           {viewMode === 'pdf' ? (
-            /* Streamed PDF Frame */
-            <div className="w-full h-full flex flex-col relative">
-              {/* Skeleton loader – visible until iframe fires onLoad */}
-              {!iframeLoaded && (
-                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-slate-900">
-                  {/* Animated spinner */}
-                  <div className="w-12 h-12 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
-                  <p className="text-slate-400 text-sm font-medium animate-pulse">Loading PDF…</p>
-                  {/* Shimmer lines mimicking a document */}
-                  <div className="w-64 space-y-2 mt-2">
-                    {[80, 95, 70, 90, 60, 85].map((w, i) => (
-                      <div
-                        key={i}
-                        className="h-2.5 rounded-full bg-slate-700 animate-pulse"
-                        style={{ width: `${w}%`, animationDelay: `${i * 80}ms` }}
-                      />
-                    ))}
-                  </div>
+            /* Streamed PDF Frame or Not Available Fallback */
+            !fileAvailable ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-slate-900">
+                <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500 mb-4 shadow-lg shadow-amber-500/5">
+                  <AlertTriangle className="w-8 h-8" />
                 </div>
-              )}
-              <iframe
-                src={`${fileUrl}#toolbar=1&navpanes=0`}
-                title={`Solution: ${title || solutionDate}`}
-                className="w-full h-full border-none bg-slate-100 dark:bg-dark-950"
-                style={{ opacity: iframeLoaded ? 1 : 0, transition: 'opacity 0.3s ease' }}
-                onLoad={() => setIframeLoaded(true)}
-              />
-            </div>
+                <h4 className="text-base font-bold text-white mb-2">PDF File Not Available</h4>
+                <p className="text-xs sm:text-sm text-slate-400 max-w-md mb-6 leading-relaxed">
+                  The PDF file for <strong className="text-slate-200">"{title || solutionDate}"</strong> is currently not found on the server. You can upload or replace it now to restore full access.
+                </p>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setIsEditing(true)}
+                    className="btn-primary flex items-center gap-2 px-5 py-2.5 shadow-lg shadow-indigo-500/20 text-xs sm:text-sm font-semibold"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>Re-upload / Replace PDF</span>
+                  </button>
+                  {pages.length > 0 && (
+                    <button
+                      onClick={() => setViewMode('images')}
+                      className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-xs sm:text-sm"
+                    >
+                      <ImageIcon className="w-4 h-4" />
+                      <span>View Cached Pages</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="w-full h-full flex flex-col relative">
+                {/* Skeleton loader – visible until iframe fires onLoad */}
+                {!iframeLoaded && (
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-slate-900">
+                    {/* Animated spinner */}
+                    <div className="w-12 h-12 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
+                    <p className="text-slate-400 text-sm font-medium animate-pulse">Loading PDF…</p>
+                    {/* Shimmer lines mimicking a document */}
+                    <div className="w-64 space-y-2 mt-2">
+                      {[80, 95, 70, 90, 60, 85].map((w, i) => (
+                        <div
+                          key={i}
+                          className="h-2.5 rounded-full bg-slate-700 animate-pulse"
+                          style={{ width: `${w}%`, animationDelay: `${i * 80}ms` }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <iframe
+                  src={`${fileUrl}#toolbar=1&navpanes=0`}
+                  title={`Solution: ${title || solutionDate}`}
+                  className="w-full h-full border-none bg-slate-100 dark:bg-dark-950"
+                  style={{ opacity: iframeLoaded ? 1 : 0, transition: 'opacity 0.3s ease' }}
+                  onLoad={() => setIframeLoaded(true)}
+                />
+              </div>
+            )
           ) : (
             /* High-Res Pages Viewer */
             <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-950">
@@ -365,6 +403,41 @@ export default function PdfViewerModal({
           )}
         </div>
       </div>
+
+      {/* Styled Delete Confirmation Dialog */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-[60] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="card max-w-sm w-full p-5 space-y-4 shadow-2xl border border-red-500/30">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-500 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-800 dark:text-white">Confirm Delete</h3>
+                <p className="text-xs text-red-500 font-medium">This action cannot be undone.</p>
+              </div>
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Are you sure you want to permanently delete solution <span className="font-semibold text-slate-800 dark:text-white">"{title || solutionDate}"</span>?
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setShowDeleteConfirm(false)} className="btn-secondary text-xs">
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  onDelete(solution.id);
+                }}
+                className="btn-danger text-xs flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete Solution
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     document.body
   );

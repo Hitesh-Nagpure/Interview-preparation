@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   FileText, Upload, Trash2, Eye, Edit3, Search, X,
-  Calendar, CheckCircle2, AlertCircle, Check, Download, RefreshCw
+  Calendar, CheckCircle2, AlertCircle, AlertTriangle, Check, Download, RefreshCw
 } from 'lucide-react';
 import PdfViewerModal from './PdfViewerModal';
 
@@ -38,6 +38,8 @@ export default function SolutionsView({ folders, onRefresh }) {
 
   // Viewer/editor state
   const [activeSolution, setActiveSolution] = useState(null); // { solution, dateFolder }
+  // Delete confirmation modal state
+  const [deleteConfirmModal, setDeleteConfirmModal] = useState(null); // { dateFolder, solutionId, title }
 
   // Aggregate all solutions across folders
   const allSolutions = folders.flatMap(f =>
@@ -102,7 +104,6 @@ export default function SolutionsView({ folders, onRefresh }) {
   };
 
   const handleDelete = async (dateFolder, solutionId, title) => {
-    if (!window.confirm(`Delete solution "${title}"?`)) return;
     try {
       const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solutionId)}`, {
         method: 'DELETE'
@@ -114,6 +115,17 @@ export default function SolutionsView({ folders, onRefresh }) {
     } catch (err) {
       showToast('error', err.message);
     }
+  };
+
+  const requestDeleteConfirm = (dateFolder, solutionId, title) => {
+    setDeleteConfirmModal({ dateFolder, solutionId, title });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmModal) return;
+    const { dateFolder, solutionId, title } = deleteConfirmModal;
+    setDeleteConfirmModal(null);
+    await handleDelete(dateFolder, solutionId, title);
   };
 
   const handleUpdate = (updatedSolution, updatedFolder) => {
@@ -269,7 +281,7 @@ export default function SolutionsView({ folders, onRefresh }) {
                   <Download className="w-3.5 h-3.5" />
                 </a>
                 <button
-                  onClick={() => handleDelete(sol.dateFolder, sol.id, sol.title || sol.solutionDate)}
+                  onClick={() => requestDeleteConfirm(sol.dateFolder, sol.id, sol.title || sol.solutionDate)}
                   className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                   title="Delete"
                 >
@@ -400,10 +412,36 @@ export default function SolutionsView({ folders, onRefresh }) {
           onClose={() => setActiveSolution(null)}
           onUpdate={handleUpdate}
           onDelete={(id) => {
-            handleDelete(activeSolution.dateFolder, id, activeSolution.solution.title || activeSolution.solution.solutionDate);
+            requestDeleteConfirm(activeSolution.dateFolder, id, activeSolution.solution.title || activeSolution.solution.solutionDate);
             setActiveSolution(null);
           }}
         />
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmModal && createPortal(
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-dark-900 border border-slate-200 dark:border-dark-600 rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center gap-2 text-red-500">
+              <AlertTriangle className="w-5 h-5" />
+              <h3 className="font-bold text-slate-800 dark:text-white">Confirm Delete</h3>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Delete solution <span className="font-semibold text-slate-700 dark:text-slate-200">"{deleteConfirmModal.title}"</span>?<br />
+              <span className="text-red-500 font-semibold">This action cannot be undone.</span>
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setDeleteConfirmModal(null)} className="btn-secondary">Cancel</button>
+              <button
+                onClick={confirmDelete}
+                className="bg-red-500 hover:bg-red-400 text-white font-semibold rounded-lg px-4 py-2 text-sm"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

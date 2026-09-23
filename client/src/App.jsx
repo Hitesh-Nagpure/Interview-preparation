@@ -36,6 +36,9 @@ export default function App() {
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#', '').trim();
+      if (hash !== 'test') {
+        setActiveTest(null);
+      }
       const validTabs = ['dashboard', 'upload', 'lecturette', 'folders', 'solutions'];
       if (validTabs.includes(hash)) {
         setActiveTab(hash);
@@ -125,13 +128,30 @@ export default function App() {
   const handleStartTest = (testType, dateFolder) => {
     const df = dateFolder || folders[0]?.dateFolder;
     if (!df) { alert('No batch found. Upload one first.'); return; }
+    // Set hash to #test so browser back button exits the test
+    window.location.hash = 'test';
     setActiveTest({ testType, dateFolder: df });
   };
 
   const handleExitTest = () => {
     setActiveTest(null);
+    if (window.location.hash === '#test') {
+      window.location.hash = activeTab;
+    }
     fetchFolders();
   };
+
+  // Listen for browser back button while test is active
+  useEffect(() => {
+    const handlePopState = () => {
+      if (activeTest) {
+        setActiveTest(null);
+        fetchFolders();
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeTest]);
 
   const handleNavigate = (tab, date = '') => {
     setInitialUploadDate(date);

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Video, VideoOff, Mic, MicOff, Play, Pause, Square, RotateCcw,
-  Upload, Trash2, CheckCircle2, AlertCircle, Calendar, Film, X,
+  Upload, Trash2, CheckCircle2, AlertCircle, AlertTriangle, Calendar, Film, X,
   Volume2, VolumeX, Maximize2, Edit3, Check, Bell, Clock, Download
 } from 'lucide-react';
 import CustomVideoPlayer from './CustomVideoPlayer';
@@ -21,6 +21,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const [recDate, setRecDate] = useState(folders[0]?.dateFolder || today);
   const [editingLecturette, setEditingLecturette] = useState(null); // { id, folderDate, title, recordedDate }
   const [lecEditSaving, setLecEditSaving] = useState(false);
+  const [deleteConfirmLec, setDeleteConfirmLec] = useState(null); // { folderDate, id, title }
   const [stream, setStream] = useState(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState('IDLE'); // 'IDLE', 'COUNTDOWN', 'RECORDING', 'PAUSED', 'STOPPED'
@@ -607,8 +608,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   };
 
   // Delete lecturette from folder
-  const handleDeleteLecturette = async (folderDate, lecturetteId) => {
-    if (!window.confirm('Are you sure you want to delete this lecturette video?')) return;
+  const executeDeleteLecturette = async (folderDate, lecturetteId) => {
     try {
       const res = await fetch(`/api/folders/${encodeURIComponent(folderDate)}/lecturette/${encodeURIComponent(lecturetteId)}`, {
         method: 'DELETE'
@@ -750,15 +750,12 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                 </div>
               )}
 
-              {/* Recording Indicator + Elapsed Time */}
+              {/* Recording Indicator (no timer shown) */}
               {recordingStatus === 'RECORDING' && (
                 <div className="absolute top-4 left-4 flex items-center gap-2.5 bg-black/70 backdrop-blur-md px-3 py-1 rounded-full border border-red-500/50 z-20">
                   <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
                   <span className="text-[11px] font-bold text-red-400 uppercase tracking-widest font-mono">
                     REC
-                  </span>
-                  <span className="text-xs font-mono font-bold text-white pl-1 border-l border-white/20">
-                    {formatTime(recordingElapsed)}
                   </span>
                 </div>
               )}
@@ -766,7 +763,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                 <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/70 backdrop-blur-md px-3 py-1 rounded-full border border-amber-500/50 z-20">
                   <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
                   <span className="text-[11px] font-bold text-amber-300 uppercase tracking-widest font-mono">
-                    PAUSED ({formatTime(recordingElapsed)})
+                    PAUSED
                   </span>
                 </div>
               )}
@@ -1028,7 +1025,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                       <Edit3 className="w-3.5 h-3.5" />
                     </button>
                     <button
-                      onClick={() => handleDeleteLecturette(lec.folderDate, lec.id)}
+                      onClick={() => setDeleteConfirmLec({ folderDate: lec.folderDate, id: lec.id, title: lec.title || 'this lecturette' })}
                       className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                       title="Delete lecturette video"
                     >
@@ -1146,6 +1143,47 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal for Lecturette Video */}
+      {deleteConfirmLec && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="card max-w-sm w-full p-5 space-y-4 shadow-2xl border border-red-500/30">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-500 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-800 dark:text-white">Confirm Delete</h3>
+                <p className="text-xs text-red-500 font-medium">This action cannot be undone.</p>
+              </div>
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Are you sure you want to delete lecturette video <span className="font-semibold text-slate-800 dark:text-white">"{deleteConfirmLec.title}"</span>?
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmLec(null)}
+                className="btn-secondary text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const { folderDate, id } = deleteConfirmLec;
+                  setDeleteConfirmLec(null);
+                  await executeDeleteLecturette(folderDate, id);
+                }}
+                className="btn-danger text-xs flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete Video
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

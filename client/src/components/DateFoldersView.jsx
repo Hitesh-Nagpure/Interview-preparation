@@ -22,6 +22,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
   const [expanded, setExpanded] = useState({});
   const [inspectModal, setInspectModal] = useState(null); // { type, dateFolder }
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { type, dateFolder }
+  const [deleteResourceConfirm, setDeleteResourceConfirm] = useState(null); // { type: 'solution'|'lecturette', dateFolder, id, label }
   const [bigImage, setBigImage] = useState(null);
 
   // PDF Solutions & Lecturette state
@@ -89,7 +90,6 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
   };
 
   const handleDeleteLecturette = async (dateFolder, lecturetteId) => {
-    if (!window.confirm('Delete this lecturette video?')) return;
     try {
       const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/lecturette/${encodeURIComponent(lecturetteId)}`, {
         method: 'DELETE'
@@ -99,6 +99,15 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
     } catch (err) {
       alert(err.message);
     }
+  };
+
+  // Confirmed resource deletion dispatcher
+  const executeResourceDelete = async () => {
+    if (!deleteResourceConfirm) return;
+    const { type, dateFolder, id } = deleteResourceConfirm;
+    if (type === 'solution') await handleDeleteSolution(dateFolder, id);
+    else if (type === 'lecturette') await handleDeleteLecturette(dateFolder, id);
+    setDeleteResourceConfirm(null);
   };
 
   // Per-folder active tab: 'tat' | 'wat' | 'solutions' | 'lecturette'
@@ -473,7 +482,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                     className="p-1.5 rounded text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors" title="View PDF">
                                     <Eye className="w-3.5 h-3.5" />
                                   </button>
-                                  <button onClick={() => handleDeleteSolution(folder.dateFolder, sol.id)}
+                                  <button onClick={() => setDeleteResourceConfirm({ type: 'solution', dateFolder: folder.dateFolder, id: sol.id, label: sol.title || sol.solutionDate || 'this PDF' })}
                                     className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors" title="Delete PDF">
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
@@ -543,7 +552,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                       <Edit3 className="w-3.5 h-3.5" />
                                     </button>
                                     <button
-                                      onClick={() => handleDeleteLecturette(folder.dateFolder, lec.id)}
+                                      onClick={() => setDeleteResourceConfirm({ type: 'lecturette', dateFolder: folder.dateFolder, id: lec.id, label: lec.title || 'this lecturette video' })}
                                       className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                                       title="Delete video"
                                     >
@@ -590,10 +599,11 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
               <AlertTriangle className="w-5 h-5" />
               <h3 className="font-bold text-slate-800 dark:text-white">Confirm Delete</h3>
             </div>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               {deleteConfirm.type === 'FOLDER' && `Delete the entire folder "${deleteConfirm.dateFolder}" and all its content?`}
               {deleteConfirm.type === 'TAT' && `Clear all TAT pictures from "${deleteConfirm.dateFolder}"?`}
               {deleteConfirm.type === 'WAT' && `Clear all WAT words from "${deleteConfirm.dateFolder}"?`}
+              <span className="text-red-500 font-semibold block mt-1">This action cannot be undone.</span>
             </p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setDeleteConfirm(null)} className="btn-secondary">Cancel</button>
@@ -603,6 +613,31 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                   else await onDeleteBatch(deleteConfirm.dateFolder, deleteConfirm.type);
                   setDeleteConfirm(null);
                 }}
+                className="bg-red-500 hover:bg-red-400 text-white font-semibold rounded-lg px-4 py-2 text-sm"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Resource Confirm Modal (solutions, lecturettes) */}
+      {deleteResourceConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="card max-w-sm w-full p-6 space-y-4">
+            <div className="flex items-center gap-2 text-red-500">
+              <AlertTriangle className="w-5 h-5" />
+              <h3 className="font-bold text-slate-800 dark:text-white">Confirm Delete</h3>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Delete <span className="font-semibold text-slate-700 dark:text-slate-200">"{deleteResourceConfirm.label}"</span>?<br />
+              <span className="text-red-500 font-semibold">This action cannot be undone.</span>
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setDeleteResourceConfirm(null)} className="btn-secondary">Cancel</button>
+              <button
+                onClick={executeResourceDelete}
                 className="bg-red-500 hover:bg-red-400 text-white font-semibold rounded-lg px-4 py-2 text-sm"
               >
                 Delete
@@ -1268,8 +1303,9 @@ function InspectModal({ info, onClose, onStartTest, onRefresh }) {
               <AlertTriangle className="w-5 h-5 shrink-0" />
               <h3 className="font-bold text-slate-800 dark:text-white">Delete Picture #{deletePicConfirm.index}?</h3>
             </div>
-            <p className="text-xs text-slate-400">
-              Are you sure you want to remove picture <strong className="text-slate-600 dark:text-slate-200">"{deletePicConfirm.originalName}"</strong> from this TAT batch? This cannot be undone.
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Are you sure you want to remove picture <strong className="text-slate-700 dark:text-slate-200">"{deletePicConfirm.originalName}"</strong> from this TAT batch?
+              <span className="text-red-500 font-semibold block mt-1">This action cannot be undone.</span>
             </p>
             <div className="flex gap-2 justify-end pt-1">
               <button

@@ -92,10 +92,100 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/uploads', express.static(uploadsDir));
 
 // ── MongoDB ───────────────────────────────────────────────────────────────────
+let gfsBucket = null;
+function getGfsBucket() {
+  if (gfsBucket) return gfsBucket;
+  if (mongoose.connection && mongoose.connection.readyState === 1 && mongoose.connection.db) {
+    gfsBucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+      bucketName: 'solutions'
+    });
+    return gfsBucket;
+  }
+  return null;
+}
+
+function writeBufferToGridFS(filename, buffer, metadata = {}) {
+  return new Promise((resolve, reject) => {
+    const bucket = getGfsBucket();
+    if (!bucket) return reject(new Error('GridFS bucket not available'));
+    const uploadStream = bucket.openUploadStream(filename, {
+      contentType: 'application/pdf',
+      metadata
+    });
+    uploadStream.on('error', reject);
+    uploadStream.on('finish', () => resolve(uploadStream.id));
+    uploadStream.end(buffer);
+  });
+}
+
+async function getGridFSStream(filenameOrId) {
+  const bucket = getGfsBucket();
+  if (!bucket) return null;
+  try {
+    const files = await bucket.find({ filename: filenameOrId }).toArray();
+    if (files && files.length > 0) {
+      return {
+        stream: bucket.openDownloadStreamByName(filenameOrId),
+        file: files[files.length - 1]
+      };
+    }
+    if (mongoose.Types.ObjectId.isValid(filenameOrId)) {
+      const id = new mongoose.Types.ObjectId(filenameOrId);
+      const filesById = await bucket.find({ _id: id }).toArray();
+      if (filesById && filesById.length > 0) {
+        return {
+          stream: bucket.openDownloadStream(id),
+          file: filesById[0]
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('GridFS read check failed:', err.message);
+  }
+  return null;
+}
+
+async function deleteFromGridFS(filenameOrId) {
+  const bucket = getGfsBucket();
+  if (!bucket) return;
+  try {
+    const files = await bucket.find({ filename: filenameOrId }).toArray();
+    for (const f of files) {
+      await bucket.delete(f._id);
+    }
+    if (mongoose.Types.ObjectId.isValid(filenameOrId)) {
+      await bucket.delete(new mongoose.Types.ObjectId(filenameOrId)).catch(() => {});
+    }
+  } catch (err) {
+    console.warn('GridFS delete warning:', err.message);
+  }
+}
+
+async function syncLocalSolutionsToGridFS() {
+  try {
+    const bucket = getGfsBucket();
+    if (!bucket || !fs.existsSync(solutionsDir)) return;
+    const localFiles = fs.readdirSync(solutionsDir).filter(f => f.endsWith('.pdf'));
+    for (const file of localFiles) {
+      const existing = await bucket.find({ filename: file }).limit(1).toArray();
+      if (!existing || existing.length === 0) {
+        const fullPath = path.join(solutionsDir, file);
+        const buf = fs.readFileSync(fullPath);
+        await writeBufferToGridFS(file, buf, { syncedFromDisk: true });
+        console.log(`📦 Synced ${file} to MongoDB GridFS`);
+      }
+    }
+  } catch (syncErr) {
+    console.warn('Sync to GridFS warning:', syncErr.message);
+  }
+}
+
 mongoose
   .connect(MONGO_URI)
   .then(() => {
     console.log('✅ Connected to MongoDB Atlas: ssb_psych_prep');
+    getGfsBucket();
+    syncLocalSolutionsToGridFS();
     seedInitialDataIfEmpty();
   })
   .catch((err) => {
@@ -444,6 +534,12 @@ app.delete('/api/folders/:dateFolder', async (req, res) => {
     if (folder.solutions) {
       for (const sol of folder.solutions) {
         await deleteStoredFile(sol.url, sol.publicId, 'raw');
+        if (sol.localPath) {
+          const lp = path.join(solutionsDir, sol.localPath);
+          if (fs.existsSync(lp)) fs.unlinkSync(lp);
+          await deleteFromGridFS(sol.localPath);
+        }
+        await deleteFromGridFS(`${sol.id}.pdf`);
       }
     }
     if (folder.lecturettes) {
@@ -545,22 +641,17 @@ app.post('/api/folders/:dateFolder/solutions',
       const sDate = solutionDate || dateFolder || new Date().toISOString().split('T')[0];
       const solTitle = title || sDate;
 
-      // 1. Always save a local copy in uploads/solutions/ so server can stream it directly
+      // 1. Always save a local copy in uploads/solutions/
       const localFilename = `${solId}.pdf`;
       fs.writeFileSync(path.join(solutionsDir, localFilename), req.file.buffer);
 
-      // 2. Also upload to Cloudinary for cloud backup and page rendering
-      let fileId = localFilename;
-      let cloudUrl = null;
-      if (cloudinary) {
-        try {
-          const result = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname, 'ssb-psych-prep/solutions', 'auto');
-          fileId = result.public_id;
-          cloudUrl = result.secure_url;
-        } catch (cErr) {
-          console.warn('Cloudinary upload warning:', cErr.message);
-        }
-      }
+      // 2. Save directly into MongoDB GridFS for 100% reliable persistence
+      writeBufferToGridFS(localFilename, req.file.buffer, {
+        solId,
+        dateFolder,
+        originalName: req.file.originalname,
+        size: req.file.size
+      }).catch(gfsErr => console.warn('GridFS save warning:', gfsErr.message));
 
       const fileProxyUrl = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solId)}/file`;
 
@@ -570,9 +661,9 @@ app.post('/api/folders/:dateFolder/solutions',
         title: solTitle,
         testType: testType || 'TAT',
         url: fileProxyUrl,
-        cloudinaryUrl: cloudUrl,
+        cloudinaryUrl: null,
         localPath: localFilename,
-        publicId: fileId,
+        publicId: localFilename,
         originalName: req.file.originalname,
         size: req.file.size,
         uploadedAt: new Date()
@@ -582,7 +673,31 @@ app.post('/api/folders/:dateFolder/solutions',
       folder.solutions.unshift(newSolution);
       await folder.save();
 
+      // Return response immediately to user — no waiting for slow Cloudinary upload!
       res.json({ success: true, message: 'Solution PDF uploaded', solution: newSolution, folder });
+
+      // 3. Background Cloudinary upload if under 10MB (Cloudinary free tier limit)
+      if (cloudinary && req.file.size <= 10485760) {
+        const fileBuffer = req.file.buffer;
+        const origName = req.file.originalname;
+        setImmediate(async () => {
+          try {
+            const result = await uploadBufferToCloudinary(fileBuffer, origName, 'ssb-psych-prep/solutions', 'auto');
+            const currentFolder = await DateFolder.findOne({ dateFolder });
+            if (currentFolder && currentFolder.solutions) {
+              const sol = currentFolder.solutions.find(s => s.id === solId);
+              if (sol) {
+                sol.publicId = result.public_id;
+                sol.cloudinaryUrl = result.secure_url;
+                await currentFolder.save();
+                console.log(`☁️ Cloudinary upload completed in background for ${solId}`);
+              }
+            }
+          } catch (cErr) {
+            console.warn('Background Cloudinary upload warning:', cErr.message);
+          }
+        });
+      }
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -617,7 +732,7 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
       }
     }
 
-    // 2. Check by solutionId or publicId
+    // 2. Check candidate local filenames
     const candidateFiles = [
       path.join(solutionsDir, `${solution.id}.pdf`),
       path.join(solutionsDir, `${solution.publicId ? solution.publicId.split('/').pop() : ''}.pdf`)
@@ -635,8 +750,39 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
       }
     }
 
-    // 3. Fallback: If on Cloudinary, fetch page images and reconstruct PDF
-    if (cloudinary && solution.publicId) {
+    // 3. Check MongoDB GridFS
+    const gfsCandidates = [
+      solution.localPath,
+      `${solution.id}.pdf`,
+      solution.publicId ? solution.publicId.split('/').pop() + '.pdf' : '',
+      solution.publicId,
+      solution.id
+    ].filter(Boolean);
+
+    for (const gfsName of gfsCandidates) {
+      const gfsItem = await getGridFSStream(gfsName);
+      if (gfsItem) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', download ? `attachment; filename="${filename}"` : `inline; filename="${filename}"`);
+        if (gfsItem.file && gfsItem.file.length) {
+          res.setHeader('Content-Length', gfsItem.file.length);
+        }
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+
+        // Also cache to local disk asynchronously for subsequent instant hits
+        try {
+          const cacheLocalPath = path.join(solutionsDir, solution.localPath || `${solution.id}.pdf`);
+          const cacheWriter = fs.createWriteStream(cacheLocalPath);
+          const gfsCacheStream = await getGridFSStream(gfsName);
+          if (gfsCacheStream) gfsCacheStream.stream.pipe(cacheWriter);
+        } catch (_) {}
+
+        return gfsItem.stream.pipe(res);
+      }
+    }
+
+    // 4. Fallback: If on Cloudinary, fetch page images and reconstruct PDF
+    if (cloudinary && solution.publicId && !solution.publicId.endsWith('.pdf')) {
       try {
         const resData = await cloudinary.api.resource(solution.publicId, { pages: true });
         const numPages = resData.pages || 1;
@@ -654,9 +800,13 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
         solution.localPath = `${solution.id}.pdf`;
         await folder.save();
 
+        // Also save reconstructed PDF to GridFS so it never has to be reconstructed again!
+        writeBufferToGridFS(`${solution.id}.pdf`, Buffer.from(pdfBytes)).catch(() => {});
+
         if (download) return res.download(savedPath, filename);
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        res.setHeader('Content-Length', pdfBytes.length);
         return res.end(Buffer.from(pdfBytes));
       } catch (reconErr) {
         console.error('PDF reconstruction error:', reconErr.message);
@@ -723,27 +873,49 @@ app.put('/api/folders/:dateFolder/solutions/:solutionId',
         if (solution.localPath) {
           const oldLocal = path.join(solutionsDir, solution.localPath);
           if (fs.existsSync(oldLocal)) fs.unlinkSync(oldLocal);
+          await deleteFromGridFS(solution.localPath);
         }
+        await deleteFromGridFS(`${solution.id}.pdf`);
 
-        // Save new file locally
+        // Save new file locally and to GridFS
         const newLocalName = `${solution.id}.pdf`;
         fs.writeFileSync(path.join(solutionsDir, newLocalName), req.file.buffer);
         solution.localPath = newLocalName;
 
-        // Upload to Cloudinary
-        if (cloudinary) {
-          try {
-            const result = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname, 'ssb-psych-prep/solutions', 'auto');
-            solution.publicId = result.public_id;
-            solution.cloudinaryUrl = result.secure_url;
-          } catch (cErr) {
-            console.warn('Cloudinary upload error:', cErr.message);
-          }
-        }
+        writeBufferToGridFS(newLocalName, req.file.buffer, {
+          solId: solution.id,
+          dateFolder,
+          originalName: req.file.originalname,
+          size: req.file.size
+        }).catch(gfsErr => console.warn('GridFS save warning:', gfsErr.message));
+
         solution.url = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`;
         solution.originalName = req.file.originalname;
         solution.size = req.file.size;
         solution.uploadedAt = new Date();
+
+        // Background Cloudinary upload if under 10MB
+        if (cloudinary && req.file.size <= 10485760) {
+          const fileBuffer = req.file.buffer;
+          const origName = req.file.originalname;
+          setImmediate(async () => {
+            try {
+              const result = await uploadBufferToCloudinary(fileBuffer, origName, 'ssb-psych-prep/solutions', 'auto');
+              const currentFolder = await DateFolder.findOne({ dateFolder });
+              if (currentFolder && currentFolder.solutions) {
+                const sol = currentFolder.solutions.find(s => s.id === solutionId || s._id?.toString() === solutionId);
+                if (sol) {
+                  sol.publicId = result.public_id;
+                  sol.cloudinaryUrl = result.secure_url;
+                  await currentFolder.save();
+                  console.log(`☁️ Cloudinary update completed in background for ${solutionId}`);
+                }
+              }
+            } catch (cErr) {
+              console.warn('Cloudinary upload warning:', cErr.message);
+            }
+          });
+        }
       }
 
       await folder.save();
@@ -767,7 +939,9 @@ app.delete('/api/folders/:dateFolder/solutions/:solutionId', async (req, res) =>
       if (solution.localPath) {
         const localPath = path.join(solutionsDir, solution.localPath);
         if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+        await deleteFromGridFS(solution.localPath);
       }
+      await deleteFromGridFS(`${solution.id}.pdf`);
     }
 
     folder.solutions = (folder.solutions || []).filter(

@@ -21,18 +21,31 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
   const [timeLeft, setTimeLeft] = useState(0);
   const [totalPhaseDuration, setTotalPhaseDuration] = useState(0);
   const [responses, setResponses] = useState({});
-  const [paperMode, setPaperMode] = useState(true);
+  const [paperMode, setPaperMode] = useState(() => {
+    try { const v = localStorage.getItem('ssb_paper_mode'); return v === null ? true : v === 'true'; } catch { return true; }
+  });
   const [speedMultiplier, setSpeedMultiplier] = useState(1);
-  const [includeBlankSlide, setIncludeBlankSlide] = useState(true);
+  const [includeBlankSlide, setIncludeBlankSlide] = useState(() => {
+    try { const v = localStorage.getItem('ssb_include_blank_slide'); return v === null ? true : v === 'true'; } catch { return true; }
+  });
   const containerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     fetch(`/api/folders/${encodeURIComponent(dateFolder)}`)
       .then(r => { if (!r.ok) throw new Error('Could not load batch'); return r.json(); })
-      .then(data => { setFolderData(data); prepareItems(data, true); setLoading(false); })
+      .then(data => { setFolderData(data); prepareItems(data, includeBlankSlide); setLoading(false); })
       .catch(err => { setError(err.message); setLoading(false); });
-  }, [dateFolder]);
+  }, [dateFolder, includeBlankSlide]);
+
+  // Handle browser back button to cleanly exit test
+  useEffect(() => {
+    const handlePop = () => {
+      if (onExit) onExit();
+    };
+    window.addEventListener('popstate', handlePop);
+    return () => window.removeEventListener('popstate', handlePop);
+  }, [onExit]);
 
   // When PSYCH transitions from TAT to WAT, re-prepare items from cached data
   useEffect(() => {
@@ -297,7 +310,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
               <p className="font-medium text-slate-700 dark:text-slate-200">Paper Writing Mode</p>
               <p className="text-[11px] text-slate-400 mt-0.5">Write on physical paper (recommended)</p>
             </div>
-            <Toggle checked={paperMode} onChange={e => setPaperMode(e.target.checked)} />
+            <Toggle checked={paperMode} onChange={e => { const v = e.target.checked; setPaperMode(v); try { localStorage.setItem('ssb_paper_mode', v ? 'true' : 'false'); } catch {} }} />
           </div>
 
           {/* Blank slide – TAT only */}
@@ -307,7 +320,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
                 <p className="font-medium text-slate-700 dark:text-slate-200">Include Blank Slide</p>
                 <p className="text-[11px] text-slate-400 mt-0.5">SSB-standard blank slide at the end</p>
               </div>
-              <Toggle checked={includeBlankSlide} onChange={e => setIncludeBlankSlide(e.target.checked)} />
+              <Toggle checked={includeBlankSlide} onChange={e => { const v = e.target.checked; setIncludeBlankSlide(v); try { localStorage.setItem('ssb_include_blank_slide', v ? 'true' : 'false'); } catch {} }} />
             </div>
           )}
         </div>
