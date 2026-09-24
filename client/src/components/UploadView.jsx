@@ -674,7 +674,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
               className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-md px-4 py-1.5 text-xs flex items-center justify-center gap-1.5 disabled:opacity-40 transition-colors"
             >
               <Upload className="w-3.5 h-3.5" />
-              <span>{solUploading ? 'Uploading to Cloudinary...' : 'Upload Solution PDF'}</span>
+              <span>{solUploading ? 'Uploading Solution PDF...' : 'Upload Solution PDF'}</span>
             </button>
           </div>
         </form>

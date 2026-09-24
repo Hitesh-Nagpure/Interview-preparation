@@ -161,12 +161,12 @@ export default function Dashboard({ folders, onStartTest, onNavigate }) {
             </div>
             <div className="flex items-center gap-1 text-xs text-slate-400 font-mono">
               <Video className="w-3.5 h-3.5 text-purple-500" />
-              Cloudinary
+              Cloud Sync
             </div>
           </div>
 
           <p className="text-xs text-slate-400">
-            Record live video speeches and store them directly in Cloudinary.
+            Record live video speeches and store them securely in the cloud.
           </p>
 
           <div className="flex gap-2 pt-1">

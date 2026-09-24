@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import PdfViewerModal from './PdfViewerModal';
 import CustomVideoPlayer from './CustomVideoPlayer';
+import NotesEditor from './NotesEditor';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '';
@@ -216,6 +217,11 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                       {folder.lecturettes.length} Lec
                     </span>
                   )}
+                  {((folder.reviews?.length || 0) + (Boolean(folder.notes?.content?.trim() && folder.notes.content !== '<p><br></p>') ? 1 : 0)) > 0 && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 hidden sm:inline-flex">
+                      {(folder.reviews?.length || 0) + (Boolean(folder.notes?.content?.trim() && folder.notes.content !== '<p><br></p>') ? 1 : 0)} Notes
+                    </span>
+                  )}
                   <button
                     onClick={() => onNavigate('upload', folder.dateFolder)}
                     className="p-1.5 rounded text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors"
@@ -239,11 +245,16 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                 const solCount = folder.solutions?.length || 0;
                 const lecCount = folder.lecturettes?.length || 0;
 
+                const hasNotes = Boolean(folder.notes?.content && folder.notes.content.trim() && folder.notes.content !== '<p><br></p>');
+                const reviewsCount = folder.reviews?.length || 0;
+                const totalNotesCount = (hasNotes ? 1 : 0) + reviewsCount;
+
                 const tabs = [
                   { id: 'tat', label: 'TAT', icon: ImageIcon, color: 'indigo', count: tatCount },
                   { id: 'wat', label: 'WAT', icon: AlignLeft, color: 'cyan', count: watCount },
                   { id: 'solutions', label: 'Solutions', icon: FileText, color: 'emerald', count: solCount },
                   { id: 'lecturette', label: 'Lecturette', icon: Video, color: 'purple', count: lecCount },
+                  { id: 'notes', label: 'Notes & Review', icon: FileText, color: 'amber', count: totalNotesCount },
                 ];
 
                 const tabColorClass = (id, isActive) => {
@@ -252,6 +263,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                     wat: isActive ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-b-2 border-cyan-500' : 'text-slate-500 hover:text-cyan-500 hover:bg-cyan-50 dark:hover:bg-cyan-500/5',
                     solutions: isActive ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-b-2 border-emerald-500' : 'text-slate-500 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/5',
                     lecturette: isActive ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-b-2 border-purple-500' : 'text-slate-500 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/5',
+                    notes: isActive ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-b-2 border-amber-500' : 'text-slate-500 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-500/5',
                   };
                   return map[id] || '';
                 };
@@ -566,6 +578,20 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                         )}
                       </div>
                     )}
+
+                    {/* Notes & Audio Review Tab */}
+                    {activeTab === 'notes' && (
+                      <NotesEditor
+                        dateFolder={folder.dateFolder}
+                        initialNotes={folder.notes}
+                        initialReviews={folder.reviews || []}
+                        onSaveSuccess={(data) => {
+                          if (data?.notes) folder.notes = data.notes;
+                          if (data?.reviews) folder.reviews = data.reviews;
+                          if (onRefresh) onRefresh();
+                        }}
+                      />
+                    )}
                   </div>
                 );
               })()}
@@ -756,7 +782,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                 className="btn-primary bg-emerald-600 hover:bg-emerald-500 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
               >
                 <Upload className="w-3.5 h-3.5" />
-                <span>{uploadingPdf ? 'Uploading to Cloudinary...' : 'Upload PDF'}</span>
+                <span>{uploadingPdf ? 'Uploading PDF...' : 'Upload PDF'}</span>
               </button>
             </div>
           </form>

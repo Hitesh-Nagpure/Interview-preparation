@@ -51,9 +51,9 @@ function uploadBufferToCloudinary(buffer, originalname, folder = 'ssb-psych-prep
     const uploadOptions = {
       folder,
       resource_type: resourceType,
-      timeout: 120000
+      timeout: 60000
     };
-    if (resourceType === 'video') {
+    if (resourceType === 'video' && !folder.includes('reviews')) {
       uploadOptions.eager_async = true;
     }
     const stream = cloudinary.uploader.upload_stream(
@@ -250,10 +250,18 @@ async function seedInitialDataIfEmpty() {
         dateFolder: today,
         folderTitle: 'Official SSB Standard Practice Set',
         tat: { title: 'SSB Standard TAT Set Alpha', pictures: samplePictures, hasBlankSlide: true, updatedAt: new Date() },
-        wat: { title: 'SSB Standard 60 WAT Words Alpha', words: sampleWords, updatedAt: new Date() }
+        wat: { title: 'SSB Standard 60 WAT Words Alpha', words: sampleWords, updatedAt: new Date() },
+        reviews: [],
+        notes: { content: '', plainText: '', updatedAt: null }
       });
       console.log('✅ Default SSB practice batch seeded!');
     }
+
+    // Requirement 2: Ensure zero reviews and notes by default across all folders
+    await DateFolder.updateMany(
+      {},
+      { $set: { reviews: [], 'notes.content': '', 'notes.plainText': '', 'notes.updatedAt': null } }
+    );
   } catch (seedErr) {
     console.warn('Seed notice:', seedErr.message);
   }
@@ -320,7 +328,23 @@ app.get('/api/folders', async (req, res) => {
         url: l.url,
         recordedDate: l.recordedDate || f.dateFolder,
         recordedAt: l.recordedAt
-      }))
+      })),
+      reviewsCount: f.reviews?.length || 0,
+      reviews: (f.reviews || []).map(r => ({
+        id: r.id,
+        title: r.title,
+        duration: r.duration,
+        url: r.url,
+        publicId: r.publicId,
+        reviewerName: r.reviewerName || '',
+        recordedAt: r.recordedAt
+      })),
+      notes: {
+        content: f.notes?.content || '',
+        plainText: f.notes?.plainText || '',
+        author: f.notes?.author || '',
+        updatedAt: f.notes?.updatedAt || null
+      }
     }));
     res.json(formatted);
   } catch (err) {
@@ -519,6 +543,125 @@ app.post('/api/folders', async (req, res) => {
   }
 });
 
+// 6b. GET notes for Date Folder
+app.get('/api/folders/:dateFolder/notes', async (req, res) => {
+  try {
+    const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+    res.json(folder.notes || { content: '', plainText: '', updatedAt: null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6c. SAVE / UPDATE notes for Date Folder
+app.put('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    const { dateFolder } = req.params;
+    const { content = '', plainText = '', author = '' } = req.body;
+    const trimmedAuthor = (author || '').trim();
+    if (!trimmedAuthor) {
+      return res.status(400).json({ error: 'Reviewer name is compulsory' });
+    }
+    let folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) {
+      folder = new DateFolder({ dateFolder });
+    }
+    folder.notes = {
+      content,
+      plainText,
+      author: trimmedAuthor,
+      updatedAt: new Date()
+    };
+    await folder.save();
+    res.json({ success: true, message: 'Notes saved successfully', notes: folder.notes, dateFolder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6d. POST / Upload Audio Review
+app.post('/api/folders/:dateFolder/reviews', memoryUpload.single('audio'), async (req, res) => {
+  try {
+    const { dateFolder } = req.params;
+    const { title = 'Audio Review', duration = 0, reviewerName = '' } = req.body;
+    const trimmedReviewer = (reviewerName || '').trim();
+
+    if (!trimmedReviewer) {
+      return res.status(400).json({ error: 'Reviewer name is compulsory' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'Audio recording file is required' });
+    }
+
+    let url, fileId;
+    if (cloudinary) {
+      const origName = req.file.originalname || `review-${Date.now()}.webm`;
+      const result = await uploadBufferToCloudinary(req.file.buffer, origName, 'ssb-psych-prep/reviews', 'video');
+      url = result.secure_url;
+      fileId = result.public_id;
+    } else {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const ext = path.extname(req.file.originalname) || '.webm';
+      const filename = 'review-' + uniqueSuffix + ext;
+      fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
+      url = `/uploads/${filename}`;
+      fileId = filename;
+    }
+
+    const newReview = {
+      id: 'rev-' + Date.now(),
+      title: title || `Audio Review ${dateFolder}`,
+      duration: Number(duration) || 0,
+      url,
+      publicId: fileId,
+      reviewerName: trimmedReviewer,
+      recordedAt: new Date()
+    };
+
+    let folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) {
+      folder = new DateFolder({
+        dateFolder,
+        tat: { pictures: [] },
+        wat: { words: [] },
+        solutions: [],
+        lecturettes: [],
+        reviews: [newReview],
+        notes: { content: '', plainText: '', author: '', updatedAt: null }
+      });
+    } else {
+      if (!folder.reviews) folder.reviews = [];
+      folder.reviews.unshift(newReview);
+    }
+    await folder.save();
+
+    res.json({ success: true, message: 'Audio review saved successfully', review: newReview, folder });
+  } catch (err) {
+    console.error('Audio review upload error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6e. DELETE Audio Review
+app.delete('/api/folders/:dateFolder/reviews/:reviewId', async (req, res) => {
+  try {
+    const { dateFolder, reviewId } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const review = folder.reviews?.find(r => r.id === reviewId || r._id?.toString() === reviewId);
+    if (review) {
+      await deleteStoredFile(review.url, review.publicId, 'video');
+      folder.reviews = folder.reviews.filter(r => r.id !== reviewId && r._id?.toString() !== reviewId);
+      await folder.save();
+    }
+    res.json({ success: true, message: 'Audio review deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 7. DELETE entire Date Folder
 app.delete('/api/folders/:dateFolder', async (req, res) => {
   try {
@@ -545,6 +688,11 @@ app.delete('/api/folders/:dateFolder', async (req, res) => {
     if (folder.lecturettes) {
       for (const lec of folder.lecturettes) {
         await deleteStoredFile(lec.url, lec.publicId, 'video');
+      }
+    }
+    if (folder.reviews) {
+      for (const rev of folder.reviews) {
+        await deleteStoredFile(rev.url, rev.publicId, 'video');
       }
     }
 
@@ -716,19 +864,29 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
 
     const download = req.query.download === 'true';
     const filename = solution.originalName || `${solution.title || 'solution'}.pdf`;
+    const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const disposition = download
+      ? `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+      : `inline; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 
-    // 1. Check if local file exists by localPath
+    // 1. Check if local file exists by localPath (supports HTTP 206 Partial Content / Range requests for mobile)
     if (solution.localPath) {
       const localFullPath = path.join(solutionsDir, solution.localPath);
       if (fs.existsSync(localFullPath)) {
         if (download) return res.download(localFullPath, filename);
-        const stat = fs.statSync(localFullPath);
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-        res.setHeader('Content-Length', stat.size);
-        res.setHeader('Cache-Control', 'private, max-age=3600');
-        res.setHeader('ETag', `"${solution.id}-${stat.mtimeMs}"`);
-        return fs.createReadStream(localFullPath).pipe(res);
+        res.setHeader('Content-Disposition', disposition);
+        res.setHeader('Accept-Ranges', 'bytes');
+        return res.sendFile(path.resolve(localFullPath), {
+          acceptRanges: true,
+          cacheControl: true,
+          maxAge: 3600000,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': disposition,
+            'Accept-Ranges': 'bytes'
+          }
+        });
       }
     }
 
@@ -740,13 +898,19 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
     for (const cPath of candidateFiles) {
       if (cPath && fs.existsSync(cPath)) {
         if (download) return res.download(cPath, filename);
-        const stat = fs.statSync(cPath);
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-        res.setHeader('Content-Length', stat.size);
-        res.setHeader('Cache-Control', 'private, max-age=3600');
-        res.setHeader('ETag', `"${solution.id}-${stat.mtimeMs}"`);
-        return fs.createReadStream(cPath).pipe(res);
+        res.setHeader('Content-Disposition', disposition);
+        res.setHeader('Accept-Ranges', 'bytes');
+        return res.sendFile(path.resolve(cPath), {
+          acceptRanges: true,
+          cacheControl: true,
+          maxAge: 3600000,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': disposition,
+            'Accept-Ranges': 'bytes'
+          }
+        });
       }
     }
 
@@ -763,7 +927,8 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
       const gfsItem = await getGridFSStream(gfsName);
       if (gfsItem) {
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', download ? `attachment; filename="${filename}"` : `inline; filename="${filename}"`);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Disposition', disposition);
         if (gfsItem.file && gfsItem.file.length) {
           res.setHeader('Content-Length', gfsItem.file.length);
         }

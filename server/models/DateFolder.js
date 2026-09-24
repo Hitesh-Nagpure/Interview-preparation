@@ -106,6 +106,37 @@ const LecturetteSchema = new mongoose.Schema({
   }
 });
 
+const ReviewSchema = new mongoose.Schema({
+  id: {
+    type: String,
+    required: true
+  },
+  title: {
+    type: String,
+    default: 'Audio Review'
+  },
+  duration: {
+    type: Number,
+    default: 0
+  },
+  url: {
+    type: String,
+    required: true
+  },
+  publicId: {
+    type: String,
+    default: ''
+  },
+  reviewerName: {
+    type: String,
+    default: ''
+  },
+  recordedAt: {
+    type: Date,
+    default: Date.now
+  }
+});
+
 const DateFolderSchema = new mongoose.Schema(
   {
     dateFolder: {
@@ -148,7 +179,26 @@ const DateFolderSchema = new mongoose.Schema(
       }
     },
     solutions: [SolutionSchema],
-    lecturettes: [LecturetteSchema]
+    lecturettes: [LecturetteSchema],
+    reviews: [ReviewSchema],
+    notes: {
+      content: {
+        type: String,
+        default: ''
+      },
+      plainText: {
+        type: String,
+        default: ''
+      },
+      author: {
+        type: String,
+        default: ''
+      },
+      updatedAt: {
+        type: Date,
+        default: null
+      }
+    }
   },
   {
     timestamps: true

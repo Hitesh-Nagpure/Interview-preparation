@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize2, Download } from 'lucide-react';
+import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize2, Download, Gauge, Check } from 'lucide-react';
+
+const SPEED_OPTIONS = [0.25, 0.5, 1, 1.5, 1.75, 2];
 
 function formatTime(secs) {
   if (isNaN(secs) || secs === Infinity || secs < 0) return '00:00';
@@ -11,6 +13,7 @@ function formatTime(secs) {
 export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay = false, className = '', downloadFilename = '' }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
+  const speedMenuRef = useRef(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -18,6 +21,8 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const hideControlsTimer = useRef(null);
 
   useEffect(() => {
@@ -25,6 +30,23 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
       setDuration(fallbackDuration);
     }
   }, [fallbackDuration]);
+
+  // Close speed menu on outside click or touch
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (speedMenuRef.current && !speedMenuRef.current.contains(e.target)) {
+        setSpeedMenuOpen(false);
+      }
+    };
+    if (speedMenuOpen) {
+      document.addEventListener('mousedown', handleOutsideClick);
+      document.addEventListener('touchstart', handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('touchstart', handleOutsideClick);
+    };
+  }, [speedMenuOpen]);
 
   const togglePlay = () => {
     const v = videoRef.current;
@@ -41,6 +63,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   const handleLoadedMetadata = () => {
     const v = videoRef.current;
     if (!v) return;
+    v.playbackRate = playbackSpeed;
     if (v.duration && !isNaN(v.duration) && v.duration !== Infinity && v.duration > 0) {
       setDuration(v.duration);
     } else if (fallbackDuration > 0) {
@@ -49,6 +72,14 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     if (autoPlay) {
       v.play().then(() => setIsPlaying(true)).catch(() => {});
     }
+  };
+
+  const handleSpeedSelect = (speed) => {
+    setPlaybackSpeed(speed);
+    if (videoRef.current) {
+      videoRef.current.playbackRate = speed;
+    }
+    setSpeedMenuOpen(false);
   };
 
   const handleTimeUpdate = () => {
@@ -270,6 +301,54 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
                 className="hidden sm:block w-14 sm:w-18 h-1.5 bg-blue-950 border border-blue-800/40 rounded-lg appearance-none cursor-pointer accent-blue-500 focus:outline-none"
                 title="Volume"
               />
+            </div>
+
+            {/* Speed Controls (0.25x, 0.5x, 1x, 1.5x, 1.75x, 2x) */}
+            <div className="relative" ref={speedMenuRef}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSpeedMenuOpen(v => !v);
+                }}
+                className={`px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-white shadow-md transition-all font-mono font-bold text-[10px] sm:text-[11px] flex items-center gap-1 focus:outline-none ${
+                  playbackSpeed !== 1
+                    ? 'bg-blue-500 ring-2 ring-blue-300'
+                    : 'bg-blue-600 hover:bg-blue-500'
+                }`}
+                title="Playback Speed (0.25x - 2x)"
+              >
+                <Gauge className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                <span>{playbackSpeed}x</span>
+              </button>
+
+              {speedMenuOpen && (
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute bottom-full mb-2 right-0 bg-slate-950/95 backdrop-blur-md border border-blue-500/50 rounded-lg shadow-2xl p-1.5 flex flex-col gap-0.5 min-w-[105px] z-50 animate-fadeIn"
+                >
+                  <div className="text-[9px] text-blue-300 font-bold px-2 py-0.5 border-b border-blue-900/60 uppercase tracking-wider flex items-center justify-between">
+                    <span>Speed</span>
+                    <span className="text-[8px] text-blue-400 font-normal">Controls</span>
+                  </div>
+                  {SPEED_OPTIONS.map((spd) => (
+                    <button
+                      key={spd}
+                      type="button"
+                      onClick={() => handleSpeedSelect(spd)}
+                      className={`px-2 py-1 text-left text-[11px] font-mono rounded flex items-center justify-between transition-colors ${
+                        playbackSpeed === spd
+                          ? 'bg-blue-600 text-white font-bold'
+                          : 'text-slate-200 hover:bg-blue-900/60 hover:text-blue-200'
+                      }`}
+                    >
+                      <span>{spd}x</span>
+                      {spd === 1 && <span className="text-[9px] opacity-75 font-sans">(Normal)</span>}
+                      {playbackSpeed === spd && <Check className="w-3 h-3 text-white ml-1" />}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Blue Download Button */}

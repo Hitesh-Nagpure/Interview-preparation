@@ -3,8 +3,12 @@ import { createPortal } from 'react-dom';
 import {
   X, Download, Trash2, Edit3, Check, FileText, Upload,
   Calendar, RefreshCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight,
-  Eye, Image as ImageIcon, AlertTriangle
+  Eye, Image as ImageIcon, AlertTriangle, ExternalLink
 } from 'lucide-react';
+import PdfCanvasViewer from './PdfCanvasViewer';
+
+const isMobileDevice = typeof navigator !== 'undefined' &&
+  /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
 export default function PdfViewerModal({
   solution,
@@ -24,8 +28,8 @@ export default function PdfViewerModal({
   const [fileAvailable, setFileAvailable] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  // View mode: 'pdf' (iframe) or 'images' (pages)
-  const [viewMode, setViewMode] = useState('pdf');
+  // View mode: 'reader' (universal Canvas PDF), 'native' (iframe), or 'images' (pages)
+  const [viewMode, setViewMode] = useState('reader');
   const [pages, setPages] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(100);
@@ -58,9 +62,13 @@ export default function PdfViewerModal({
       .catch(() => {});
   }, [dateFolder, solution.id, fileUrl]);
 
-  // Reset iframe loader whenever we switch back to PDF view or solution changes
+  // Reset iframe loader and provide fallback timer for mobile browsers
   useEffect(() => {
     setIframeLoaded(false);
+    const timer = setTimeout(() => {
+      setIframeLoaded(true);
+    }, 2500);
+    return () => clearTimeout(timer);
   }, [viewMode, solution.id]);
 
   const handleDateChange = (newDate) => {
@@ -130,34 +138,60 @@ export default function PdfViewerModal({
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            {/* View Mode Toggle (if pages available) */}
-            {pages.length > 0 && (
-              <div className="flex items-center bg-slate-200 dark:bg-dark-700 rounded p-0.5 text-xs">
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+            {/* View Mode Toggle: Reader (Canvas) | Native (Iframe) | Pages (Images) */}
+            <div className="flex items-center bg-slate-200 dark:bg-dark-700 rounded p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setViewMode('reader')}
+                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                  viewMode === 'reader'
+                    ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                }`}
+                title="Universal Canvas PDF Reader (Recommended for all mobile devices)"
+              >
+                Reader
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('pdf')}
+                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                  viewMode === 'pdf'
+                    ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                }`}
+                title="Native embedded browser viewer"
+              >
+                Native
+              </button>
+              {pages.length > 0 && (
                 <button
-                  onClick={() => setViewMode('pdf')}
-                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-                    viewMode === 'pdf'
-                      ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
-                      : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
-                  }`}
-                  title="View as embedded PDF"
-                >
-                  PDF
-                </button>
-                <button
+                  type="button"
                   onClick={() => setViewMode('images')}
                   className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
                     viewMode === 'images'
-                      ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                      ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold'
                       : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
                   }`}
                   title="View pages as high-resolution images"
                 >
                   Pages ({pages.length})
                 </button>
-              </div>
-            )}
+              )}
+            </div>
+
+            {/* Direct Open in Device Viewer / New Tab (Essential for Mobile Devices) */}
+            <a
+              href={fileUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-1.5 rounded text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors flex items-center gap-1 text-[11px] font-semibold border border-indigo-500/20"
+              title="Open directly in Mobile / System PDF Viewer"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Open</span>
+            </a>
 
             {/* Edit Button */}
             <button
@@ -278,65 +312,94 @@ export default function PdfViewerModal({
 
         {/* Content Viewer Area */}
         <div className="flex-1 w-full h-full bg-slate-900 relative overflow-hidden flex flex-col">
-          {viewMode === 'pdf' ? (
-            /* Streamed PDF Frame or Not Available Fallback */
-            !fileAvailable ? (
-              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-slate-900">
-                <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500 mb-4 shadow-lg shadow-amber-500/5">
-                  <AlertTriangle className="w-8 h-8" />
-                </div>
-                <h4 className="text-base font-bold text-white mb-2">PDF File Not Available</h4>
-                <p className="text-xs sm:text-sm text-slate-400 max-w-md mb-6 leading-relaxed">
-                  The PDF file for <strong className="text-slate-200">"{title || solutionDate}"</strong> is currently not found on the server. You can upload or replace it now to restore full access.
-                </p>
-                <div className="flex items-center gap-3">
+          {!fileAvailable ? (
+            /* Not Available Fallback */
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-slate-900">
+              <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500 mb-4 shadow-lg shadow-amber-500/5">
+                <AlertTriangle className="w-8 h-8" />
+              </div>
+              <h4 className="text-base font-bold text-white mb-2">PDF File Not Available</h4>
+              <p className="text-xs sm:text-sm text-slate-400 max-w-md mb-6 leading-relaxed">
+                The PDF file for <strong className="text-slate-200">"{title || solutionDate}"</strong> is currently not found on the server. You can upload or replace it now to restore full access.
+              </p>
+              <div className="flex items-center gap-3 flex-wrap justify-center">
+                <button
+                  onClick={() => setIsEditing(true)}
+                  className="btn-primary flex items-center gap-2 px-5 py-2.5 shadow-lg shadow-indigo-500/20 text-xs sm:text-sm font-semibold"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>Re-upload / Replace PDF</span>
+                </button>
+                {pages.length > 0 && (
                   <button
-                    onClick={() => setIsEditing(true)}
-                    className="btn-primary flex items-center gap-2 px-5 py-2.5 shadow-lg shadow-indigo-500/20 text-xs sm:text-sm font-semibold"
+                    onClick={() => setViewMode('images')}
+                    className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-xs sm:text-sm"
                   >
-                    <Upload className="w-4 h-4" />
-                    <span>Re-upload / Replace PDF</span>
+                    <ImageIcon className="w-4 h-4" />
+                    <span>View Cached Pages</span>
                   </button>
-                  {pages.length > 0 && (
-                    <button
-                      onClick={() => setViewMode('images')}
-                      className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-xs sm:text-sm"
-                    >
-                      <ImageIcon className="w-4 h-4" />
-                      <span>View Cached Pages</span>
-                    </button>
-                  )}
+                )}
+              </div>
+            </div>
+          ) : viewMode === 'reader' ? (
+            /* Universal Mobile-First Canvas PDF Reader */
+            <PdfCanvasViewer
+              url={fileUrl}
+              title={title || solutionDate}
+              downloadUrl={downloadUrl}
+              onSwitchNative={() => setViewMode('pdf')}
+            />
+          ) : viewMode === 'pdf' ? (
+            /* Native Browser Iframe Viewer with Mobile Helper */
+            <div className="w-full h-full flex flex-col relative">
+              {/* Mobile device helper banner if user is viewing in native mode */}
+              <div className="bg-slate-800/90 px-3 py-1.5 text-[11px] text-slate-300 flex items-center justify-between border-b border-slate-700/60 shrink-0">
+                <span className="truncate">Not rendering on your mobile browser?</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('reader')}
+                    className="text-indigo-400 hover:text-indigo-300 font-bold underline text-[11px]"
+                  >
+                    Switch to Reader
+                  </button>
+                  <a
+                    href={fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-emerald-400 hover:text-emerald-300 font-bold underline text-[11px]"
+                  >
+                    Open in Tab
+                  </a>
                 </div>
               </div>
-            ) : (
-              <div className="w-full h-full flex flex-col relative">
-                {/* Skeleton loader – visible until iframe fires onLoad */}
-                {!iframeLoaded && (
-                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-slate-900">
-                    {/* Animated spinner */}
-                    <div className="w-12 h-12 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
-                    <p className="text-slate-400 text-sm font-medium animate-pulse">Loading PDF…</p>
-                    {/* Shimmer lines mimicking a document */}
-                    <div className="w-64 space-y-2 mt-2">
-                      {[80, 95, 70, 90, 60, 85].map((w, i) => (
-                        <div
-                          key={i}
-                          className="h-2.5 rounded-full bg-slate-700 animate-pulse"
-                          style={{ width: `${w}%`, animationDelay: `${i * 80}ms` }}
-                        />
-                      ))}
-                    </div>
+
+              {/* Skeleton loader – visible until iframe fires onLoad or fallback timer fires */}
+              {!iframeLoaded && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-slate-900 pointer-events-none">
+                  {/* Animated spinner */}
+                  <div className="w-12 h-12 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
+                  <p className="text-slate-400 text-sm font-medium animate-pulse">Loading PDF…</p>
+                  {/* Shimmer lines mimicking a document */}
+                  <div className="w-64 space-y-2 mt-2">
+                    {[80, 95, 70, 90, 60, 85].map((w, i) => (
+                      <div
+                        key={i}
+                        className="h-2.5 rounded-full bg-slate-700 animate-pulse"
+                        style={{ width: `${w}%`, animationDelay: `${i * 80}ms` }}
+                      />
+                    ))}
                   </div>
-                )}
-                <iframe
-                  src={`${fileUrl}#toolbar=1&navpanes=0`}
-                  title={`Solution: ${title || solutionDate}`}
-                  className="w-full h-full border-none bg-slate-100 dark:bg-dark-950"
-                  style={{ opacity: iframeLoaded ? 1 : 0, transition: 'opacity 0.3s ease' }}
-                  onLoad={() => setIframeLoaded(true)}
-                />
-              </div>
-            )
+                </div>
+              )}
+              <iframe
+                src={`${fileUrl}#toolbar=1&navpanes=0`}
+                title={`Solution: ${title || solutionDate}`}
+                className="w-full h-full border-none bg-slate-100 dark:bg-dark-950"
+                style={{ opacity: iframeLoaded ? 1 : 0, transition: 'opacity 0.3s ease' }}
+                onLoad={() => setIframeLoaded(true)}
+              />
+            </div>
           ) : (
             /* High-Res Pages Viewer */
             <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-950">

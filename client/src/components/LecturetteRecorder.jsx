@@ -576,7 +576,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         xhr.send(fd);
       });
 
-      setUploadSuccess(`Lecturette "${targetTitle}" saved successfully to Cloudinary!`);
+      setUploadSuccess(`Lecturette "${targetTitle}" saved successfully!`);
       if (onRefresh) onRefresh();
     } catch (err) {
       setError(err.message);
@@ -636,7 +636,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
             Live Lecturette Video Recorder
           </h1>
           <p className="text-xs text-slate-400">
-            Record your lecturette live and store the video in Cloudinary.
+            Record your lecturette live and store the video securely in the cloud.
           </p>
         </div>
 
