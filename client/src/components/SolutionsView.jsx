@@ -5,6 +5,7 @@ import {
   Calendar, CheckCircle2, AlertCircle, AlertTriangle, Check, Download, RefreshCw
 } from 'lucide-react';
 import PdfViewerModal from './PdfViewerModal';
+import { apiUrl } from '../utils/api';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '';
@@ -86,7 +87,7 @@ export default function SolutionsView({ folders, onRefresh }) {
       fd.append('title', pdfTitle || chosenDate);
       fd.append('testType', pdfTestType);
 
-      const res = await fetch(`/api/folders/${encodeURIComponent(uploadModal.dateFolder)}/solutions`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(uploadModal.dateFolder)}/solutions`), {
         method: 'POST',
         body: fd
       });
@@ -105,7 +106,7 @@ export default function SolutionsView({ folders, onRefresh }) {
 
   const handleDelete = async (dateFolder, solutionId, title) => {
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solutionId)}`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solutionId)}`), {
         method: 'DELETE'
       });
       if (!res.ok) throw new Error('Delete failed');
@@ -271,7 +272,7 @@ export default function SolutionsView({ folders, onRefresh }) {
                   <Edit3 className="w-3.5 h-3.5" />
                 </button>
                 <a
-                  href={sol.url && sol.url.startsWith('/api') ? `${sol.url}?download=true` : `/api/folders/${encodeURIComponent(sol.dateFolder)}/solutions/${encodeURIComponent(sol.id)}/file?download=true`}
+                  href={apiUrl(sol.url && (sol.url.startsWith('/api') || sol.url.startsWith('http')) ? `${sol.url}?download=true` : `/api/folders/${encodeURIComponent(sol.dateFolder)}/solutions/${encodeURIComponent(sol.id)}/file?download=true`)}
                   target="_blank"
                   rel="noopener noreferrer"
                   download={sol.originalName || `${sol.title || 'solution'}.pdf`}

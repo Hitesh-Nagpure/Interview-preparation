@@ -6,6 +6,7 @@ import {
   Eye, Image as ImageIcon, AlertTriangle, ExternalLink
 } from 'lucide-react';
 import PdfCanvasViewer from './PdfCanvasViewer';
+import { apiUrl } from '../utils/api';
 
 const isMobileDevice = typeof navigator !== 'undefined' &&
   /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -38,9 +39,10 @@ export default function PdfViewerModal({
   if (!solution) return null;
 
   // Reliable server stream URL that avoids Cloudinary 401 ACL failure
-  const fileUrl = solution.url && solution.url.startsWith('/api')
+  const rawFileUrl = solution.url && (solution.url.startsWith('/api') || solution.url.startsWith('http'))
     ? solution.url
     : `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`;
+  const fileUrl = apiUrl(rawFileUrl);
   const downloadUrl = `${fileUrl}?download=true`;
 
   useEffect(() => {
@@ -52,7 +54,7 @@ export default function PdfViewerModal({
       .catch(() => setFileAvailable(false));
 
     // Check if Cloudinary page images are available
-    fetch(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/pages`)
+    fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/pages`))
       .then(r => r.json())
       .then(d => {
         if (d.pages && d.pages.length > 0) {
@@ -91,7 +93,7 @@ export default function PdfViewerModal({
         fd.append('file', replacementFile);
       }
 
-      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}`), {
         method: 'PUT',
         body: fd
       });

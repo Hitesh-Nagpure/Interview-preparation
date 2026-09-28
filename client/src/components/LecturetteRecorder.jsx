@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import CustomVideoPlayer from './CustomVideoPlayer';
 import { soundEngine } from '../utils/audio';
+import { apiUrl } from '../utils/api';
 
 function formatTime(secs) {
   if (isNaN(secs) || secs === Infinity || secs < 0) return '00:00';
@@ -549,7 +550,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', `/api/folders/${encodeURIComponent(targetFolder)}/lecturette`);
+        xhr.open('POST', apiUrl(`/api/folders/${encodeURIComponent(targetFolder)}/lecturette`));
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
             const pct = Math.round((e.loaded / e.total) * 100);
@@ -592,7 +593,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     setLecEditSaving(true);
     try {
       const { id, folderDate, title, recordedDate } = editingLecturette;
-      const res = await fetch(`/api/folders/${encodeURIComponent(folderDate)}/lecturette/${encodeURIComponent(id)}`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(folderDate)}/lecturette/${encodeURIComponent(id)}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, recordedDate })
@@ -610,7 +611,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   // Delete lecturette from folder
   const executeDeleteLecturette = async (folderDate, lecturetteId) => {
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(folderDate)}/lecturette/${encodeURIComponent(lecturetteId)}`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(folderDate)}/lecturette/${encodeURIComponent(lecturetteId)}`), {
         method: 'DELETE'
       });
       if (!res.ok) throw new Error('Could not delete video');

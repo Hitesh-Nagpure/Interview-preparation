@@ -9,6 +9,7 @@ import {
 import PdfViewerModal from './PdfViewerModal';
 import CustomVideoPlayer from './CustomVideoPlayer';
 import NotesEditor from './NotesEditor';
+import { apiUrl } from '../utils/api';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '';
@@ -56,7 +57,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
       fd.append('title', pdfTitle || chosenDate);
       fd.append('testType', pdfTestType);
 
-      const res = await fetch(`/api/folders/${encodeURIComponent(pdfUploadModal.dateFolder)}/solutions`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(pdfUploadModal.dateFolder)}/solutions`), {
         method: 'POST',
         body: fd
       });
@@ -77,7 +78,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
 
   const handleDeleteSolution = async (dateFolder, solutionId) => {
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solutionId)}`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solutionId)}`), {
         method: 'DELETE'
       });
       if (!res.ok) throw new Error('Failed to delete solution');
@@ -92,7 +93,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
 
   const handleDeleteLecturette = async (dateFolder, lecturetteId) => {
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/lecturette/${encodeURIComponent(lecturetteId)}`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/lecturette/${encodeURIComponent(lecturetteId)}`), {
         method: 'DELETE'
       });
       if (!res.ok) throw new Error('Failed to delete lecturette');
@@ -125,7 +126,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
     setLecEditSaving(true);
     try {
       const { id, dateFolder, title, recordedDate } = editingLecturette;
-      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/lecturette/${encodeURIComponent(id)}`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/lecturette/${encodeURIComponent(id)}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, recordedDate })
@@ -903,7 +904,7 @@ function InspectModal({ info, onClose, onStartTest, onRefresh }) {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`/api/folders/${encodeURIComponent(info.dateFolder)}`)
+    fetch(apiUrl(`/api/folders/${encodeURIComponent(info.dateFolder)}`))
       .then(r => r.json())
       .then(d => {
         setData(d);
@@ -919,7 +920,7 @@ function InspectModal({ info, onClose, onStartTest, onRefresh }) {
   const handleDeletePicture = async (picId) => {
     setDeletingId(picId);
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(info.dateFolder)}/tat/${encodeURIComponent(picId)}`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(info.dateFolder)}/tat/${encodeURIComponent(picId)}`), {
         method: 'DELETE'
       });
       const resData = await res.json();

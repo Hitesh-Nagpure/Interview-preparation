@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf, ArrowRight, FastForward } from 'lucide-react';
+import { apiUrl } from '../utils/api';
 
 export default function UploadView({ initialDateFolder, onUploadSuccess, onRefresh }) {
   const today = new Date().toISOString().split('T')[0];
@@ -35,7 +36,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
 
   const handleSkipAll = async () => {
     try {
-      const res = await fetch('/api/folders', {
+      const res = await fetch(apiUrl('/api/folders'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dateFolder: dateFolder.trim(), folderTitle })
@@ -92,7 +93,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
       fd.append('testType', solTestType);
 
       const targetFolder = (dateFolder || chosenDate).trim();
-      const res = await fetch(`/api/folders/${encodeURIComponent(targetFolder)}/solutions`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(targetFolder)}/solutions`), {
         method: 'POST',
         body: fd
       });
@@ -157,7 +158,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
       fd.append('folderTitle', folderTitle);
       fd.append('hasBlankSlide', tatBlankSlide);
       fd.append('append', tatAppend);
-      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder.trim())}/tat`, { method: 'POST', body: fd });
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder.trim())}/tat`), { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       rewritePreviews.forEach(p => URL.revokeObjectURL(p.url));
@@ -179,7 +180,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
     if (!watWords.length) { showToast('error', 'Enter at least one word.'); return; }
     setWatUploading(true);
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder.trim())}/wat`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder.trim())}/wat`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ words: watWords, title: watTitle, folderTitle, append: watAppend })

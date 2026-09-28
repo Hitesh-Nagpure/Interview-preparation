@@ -4,6 +4,7 @@ import {
   RotateCcw, CheckCircle2, ArrowLeft, Shield, Sun, Moon
 } from 'lucide-react';
 import { soundEngine } from '../utils/audio';
+import { apiUrl } from '../utils/api';
 
 export default function TestSimulator({ testType: testTypeProp, dateFolder, onExit, isDark, toggleTheme }) {
   // For PSYCH mode we run TAT first then WAT
@@ -32,7 +33,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/folders/${encodeURIComponent(dateFolder)}`)
+    fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}`))
       .then(r => { if (!r.ok) throw new Error('Could not load batch'); return r.json(); })
       .then(data => { setFolderData(data); prepareItems(data, includeBlankSlide); setLoading(false); })
       .catch(err => { setError(err.message); setLoading(false); });

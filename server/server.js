@@ -1275,13 +1275,22 @@ async function deleteStoredFile(url, publicId, resourceType = 'image') {
   }
 }
 
-// ── Serve React frontend in production ────────────────────────────────────────
+// ── Serve React frontend in production (if built locally/together) ─────────
 const clientBuild = path.join(__dirname, '../client/dist');
 if (fs.existsSync(clientBuild)) {
   app.use(express.static(clientBuild));
   // SPA fallback — must be LAST, only for non-API routes
   app.get(/^(?!\/api).*/, (req, res) => {
     res.sendFile(path.join(clientBuild, 'index.html'));
+  });
+} else {
+  // Standalone API deployment (e.g. Render backend paired with Vercel frontend)
+  app.get('/', (req, res) => {
+    res.json({
+      status: 'ok',
+      message: 'SSB Psych Prep API is running',
+      dbConnected: mongoose.connection.readyState === 1
+    });
   });
 }
 

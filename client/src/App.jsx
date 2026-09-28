@@ -7,6 +7,7 @@ import TestSimulator from './components/TestSimulator';
 import LecturetteRecorder from './components/LecturetteRecorder';
 import SolutionsView from './components/SolutionsView';
 import { soundEngine } from './utils/audio';
+import { apiUrl } from './utils/api';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(() => {
@@ -102,7 +103,7 @@ export default function App() {
 
   const fetchFolders = async () => {
     try {
-      const res = await fetch('/api/folders');
+      const res = await fetch(apiUrl('/api/folders'));
       if (!res.ok) throw new Error();
       const data = await res.json();
       setFolders(data);
@@ -117,7 +118,7 @@ export default function App() {
   useEffect(() => {
     fetchFolders();
     const interval = setInterval(() => {
-      fetch('/api/health')
+      fetch(apiUrl('/api/health'))
         .then(r => r.json())
         .then(d => setDbConnected(d.dbConnected))
         .catch(() => setDbConnected(false));
@@ -159,7 +160,7 @@ export default function App() {
   };
 
   const handleDeleteFolder = async (dateFolder) => {
-    await fetch(`/api/folders/${encodeURIComponent(dateFolder)}`, { method: 'DELETE' });
+    await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}`), { method: 'DELETE' });
     fetchFolders();
   };
 
@@ -167,7 +168,7 @@ export default function App() {
     const url = type === 'TAT'
       ? `/api/folders/${encodeURIComponent(dateFolder)}/tat`
       : `/api/folders/${encodeURIComponent(dateFolder)}/wat`;
-    await fetch(url, { method: 'DELETE' });
+    await fetch(apiUrl(url), { method: 'DELETE' });
     fetchFolders();
   };
 

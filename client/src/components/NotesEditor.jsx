@@ -5,6 +5,7 @@ import {
   Bold, Italic, Underline, Strikethrough, List, ListOrdered,
   Heading1, Heading2, Quote, Undo, Redo, Sparkles, User, ShieldCheck
 } from 'lucide-react';
+import { apiUrl } from '../utils/api';
 
 function formatDuration(secs) {
   if (isNaN(secs) || secs === Infinity || secs < 0) return '00:00';
@@ -260,7 +261,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       // Fast upload via XHR with streaming progress
       const data = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', `/api/folders/${encodeURIComponent(dateFolder)}/reviews`);
+        xhr.open('POST', apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/reviews`));
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
             const pct = Math.round((e.loaded / e.total) * 100);
@@ -312,7 +313,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
     if (!window.confirm('Delete this audio review?')) return;
     try {
       const res = await fetch(
-        `/api/folders/${encodeURIComponent(dateFolder)}/reviews/${encodeURIComponent(reviewId)}`,
+        apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/reviews/${encodeURIComponent(reviewId)}`),
         { method: 'DELETE' }
       );
       if (!res.ok) throw new Error('Failed to delete review');
@@ -389,7 +390,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
     setNotesError(null);
 
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(dateFolder)}/notes`, {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/notes`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -470,9 +471,9 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
                 Reviewer / Author Name
               </label>
               <span className="text-[15px] font-bold text-red-500">*</span>
-              <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.2 rounded border border-emerald-500/20">
+              {/* <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.2 rounded border border-emerald-500/20">
                 Auto-Saved
-              </span>
+              </span> */}
             </div>
             <p className="text-[11px] text-slate-400">
               Required for recording audio reviews & saving written notes
