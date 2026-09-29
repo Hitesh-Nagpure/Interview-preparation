@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf, ArrowRight, FastForward } from 'lucide-react';
+import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf, ArrowRight, FastForward, Video } from 'lucide-react';
 import { apiUrl } from '../utils/api';
 
 export default function UploadView({ initialDateFolder, onUploadSuccess, onRefresh }) {
@@ -30,6 +30,68 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
   const [solFile, setSolFile] = useState(null);
   const [solUploading, setSolUploading] = useState(false);
   const solFileRef = useRef(null);
+
+  // Lecturette Video state
+  const [lecTitle, setLecTitle] = useState('');
+  const [lecDate, setLecDate] = useState(initialDateFolder || today);
+  const [lecFile, setLecFile] = useState(null);
+  const [lecUploading, setLecUploading] = useState(false);
+  const [lecProgress, setLecProgress] = useState(null);
+  const lecFileRef = useRef(null);
+
+  const uploadLecturetteVideo = async (e) => {
+    e.preventDefault();
+    if (!lecFile) return;
+    setLecUploading(true);
+    setLecProgress(0);
+    try {
+      const fd = new FormData();
+      fd.append('video', lecFile);
+      const chosenDate = lecDate || dateFolder || today;
+      const defaultTitle = lecFile ? lecFile.name.replace(/\.[^/.]+$/, '') : `Lecturette ${chosenDate}`;
+      fd.append('recordedDate', chosenDate);
+      fd.append('title', lecTitle || defaultTitle);
+
+      const targetFolder = (dateFolder || chosenDate).trim();
+
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', apiUrl(`/api/folders/${encodeURIComponent(targetFolder)}/lecturette`));
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const pct = Math.round((event.loaded / event.total) * 100);
+            setLecProgress(pct);
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            try {
+              const errData = JSON.parse(xhr.responseText);
+              reject(new Error(errData.error || 'Failed to upload video'));
+            } catch {
+              reject(new Error(`Upload failed with HTTP ${xhr.status}`));
+            }
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network error while uploading video'));
+        xhr.send(fd);
+      });
+
+      showToast('success', `Lecturette video "${lecTitle || defaultTitle}" uploaded to batch ${targetFolder}.`);
+      setLecFile(null);
+      setLecTitle('');
+      if (lecFileRef.current) lecFileRef.current.value = '';
+      if (onRefresh) onRefresh();
+      if (onUploadSuccess) onUploadSuccess();
+    } catch (err) {
+      showToast('error', err.message);
+    } finally {
+      setLecUploading(false);
+      setLecProgress(null);
+    }
+  };
 
   const [toast, setToast] = useState(null); // { type, text, visible }
   const toastTimer = useRef(null);
@@ -331,6 +393,17 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
           <span className="text-base sm:text-lg font-black tracking-wide font-mono">SOLUTIONS</span>
           <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">PDF</span>
           {solFile && <span className="badge-emerald">1</span>}
+        </button>
+        <button
+          onClick={() => setTab('lecturette')}
+          className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-all ${
+            tab === 'lecturette' ? 'border-purple-500 text-purple-600 dark:text-purple-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+          }`}
+        >
+          <Video className="w-4 h-4" />
+          <span className="text-base sm:text-lg font-black tracking-wide font-mono">LECTURETTE</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Video</span>
+          {lecFile && <span className="text-xs font-mono font-bold px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20">1</span>}
         </button>
       </div>
 
@@ -676,6 +749,94 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
             >
               <Upload className="w-3.5 h-3.5" />
               <span>{solUploading ? 'Uploading Solution PDF...' : 'Upload Solution PDF'}</span>
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Lecturette Tab */}
+      {tab === 'lecturette' && (
+        <form onSubmit={uploadLecturetteVideo} className="card p-5 space-y-4">
+          <div>
+            <label className="label">Lecturette Title (optional)</label>
+            <input
+              type="text"
+              value={lecTitle}
+              onChange={e => setLecTitle(e.target.value)}
+              placeholder="e.g. Modern Geopolitics & Defense"
+              className="input"
+            />
+          </div>
+
+          <div>
+            <label className="label">Date of Recording</label>
+            <input
+              type="date"
+              value={lecDate}
+              onChange={e => setLecDate(e.target.value)}
+              className="input"
+            />
+          </div>
+
+          <div>
+            <label className="label">Select Video File (.mp4, .webm, .mov, etc.)</label>
+            <div className="flex items-center gap-2">
+              <input
+                ref={lecFileRef}
+                type="file"
+                accept="video/mp4,video/webm,video/quicktime,video/mkv,video/x-matroska,video/*,.mp4,.webm,.mov,.mkv"
+                onChange={e => {
+                  const f = e.target.files?.[0] || null;
+                  setLecFile(f);
+                  if (f && !lecTitle) {
+                    setLecTitle(f.name.replace(/\.[^/.]+$/, ''));
+                  }
+                }}
+                className="input py-1 text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-purple-50 dark:file:bg-purple-950/40 file:text-purple-700 dark:file:text-purple-300 hover:file:bg-purple-100"
+              />
+              {lecFile && (
+                <button
+                  type="button"
+                  onClick={() => { setLecFile(null); if (lecFileRef.current) lecFileRef.current.value = ''; }}
+                  className="p-1.5 rounded text-slate-400 hover:text-red-500"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            {lecFile && (
+              <p className="text-xs text-slate-400 mt-1">
+                Selected: <span className="font-semibold text-slate-700 dark:text-slate-200">{lecFile.name}</span> ({(lecFile.size / (1024 * 1024)).toFixed(1)} MB)
+              </p>
+            )}
+          </div>
+
+          {lecUploading && lecProgress !== null && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs text-slate-400">
+                <span>Uploading lecturette video...</span>
+                <span>{lecProgress}%</span>
+              </div>
+              <div className="w-full bg-slate-200 dark:bg-dark-700 h-2 rounded-full overflow-hidden">
+                <div
+                  className="bg-purple-600 h-full transition-all duration-200"
+                  style={{ width: `${lecProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-dark-600">
+            <span className="text-[11px] text-slate-400">
+              Batch Folder: <strong className="font-mono text-slate-600 dark:text-slate-300">{dateFolder}</strong>
+            </span>
+            <button
+              type="submit"
+              disabled={lecUploading || !lecFile}
+              className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-4 py-1.5 text-xs flex items-center justify-center gap-1.5 disabled:opacity-40 transition-colors"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{lecUploading ? (lecProgress !== null ? `Uploading (${lecProgress}%)...` : 'Saving...') : 'Upload Lecturette Video'}</span>
             </button>
           </div>
         </form>

@@ -38,6 +38,66 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
   const [uploadingPdf, setUploadingPdf] = useState(false);
   const [uploadError, setUploadError] = useState(null);
 
+  // Lecturette Upload state
+  const [lecturetteUploadModal, setLecturetteUploadModal] = useState(null); // { dateFolder }
+  const [lecFile, setLecFile] = useState(null);
+  const [lecDate, setLecDate] = useState('');
+  const [lecTitle, setLecTitle] = useState('');
+  const [uploadingLec, setUploadingLec] = useState(false);
+  const [lecUploadProgress, setLecUploadProgress] = useState(null);
+  const [lecUploadError, setLecUploadError] = useState(null);
+
+  const handleUploadLecturette = async (e) => {
+    e.preventDefault();
+    if (!lecFile || !lecturetteUploadModal) return;
+    setUploadingLec(true);
+    setLecUploadError(null);
+    setLecUploadProgress(0);
+    try {
+      const fd = new FormData();
+      fd.append('video', lecFile);
+      const chosenDate = (lecDate || lecturetteUploadModal.dateFolder).trim();
+      fd.append('recordedDate', chosenDate);
+      fd.append('title', (lecTitle || lecFile.name.replace(/\.[^/.]+$/, '') || `Lecturette ${chosenDate}`).trim());
+
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', apiUrl(`/api/folders/${encodeURIComponent(lecturetteUploadModal.dateFolder)}/lecturette`));
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const pct = Math.round((event.loaded / event.total) * 100);
+            setLecUploadProgress(pct);
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            try {
+              const errData = JSON.parse(xhr.responseText);
+              reject(new Error(errData.error || 'Failed to upload video'));
+            } catch {
+              reject(new Error(`Upload failed with HTTP ${xhr.status}`));
+            }
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network error while uploading video'));
+        xhr.send(fd);
+      });
+
+      setLecturetteUploadModal(null);
+      setLecFile(null);
+      setLecTitle('');
+      setLecDate('');
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setLecUploadError(err.message);
+    } finally {
+      setUploadingLec(false);
+      setLecUploadProgress(null);
+    }
+  };
+
   const toggle = (df) => setExpanded(p => ({ ...p, [df]: !isOpen(df) }));
   const isOpen = (df) => {
     if (expanded[df] !== undefined) return expanded[df];
@@ -516,21 +576,54 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                             <span className="text-2xl sm:text-3xl font-black text-purple-600 dark:text-purple-400 font-mono tracking-wider">Lecturette</span>
                             <span className="text-sm text-slate-500 dark:text-slate-400 font-semibold">· {lecCount} videos</span>
                           </div>
-                          <button
-                            onClick={() => onNavigate('lecturette')}
-                            className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors"
-                          >
-                            <Video className="w-3 h-3" /> Record New
-                          </button>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button
+                              onClick={() => {
+                                setLecDate(folder.dateFolder);
+                                setLecTitle('');
+                                setLecFile(null);
+                                setLecUploadError(null);
+                                setLecturetteUploadModal({ dateFolder: folder.dateFolder });
+                              }}
+                              className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors shadow-sm"
+                              title="Upload a pre-recorded lecturette video file"
+                            >
+                              <Upload className="w-3 h-3" /> Upload Video
+                            </button>
+                            <button
+                              onClick={() => onNavigate('lecturette')}
+                              className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors border border-slate-700"
+                              title="Record video using webcam"
+                            >
+                              <Video className="w-3 h-3" /> Record Live
+                            </button>
+                          </div>
                         </div>
 
                         {lecCount === 0 ? (
-                          <div className="text-center py-8 space-y-2">
+                          <div className="text-center py-8 space-y-3">
                             <Video className="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto" />
-                            <p className="text-sm text-slate-400">No lecturette videos recorded yet</p>
-                            <button onClick={() => onNavigate('lecturette')} className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors">
-                              <Video className="w-3 h-3" /> Go to Recorder
-                            </button>
+                            <p className="text-sm text-slate-400">No lecturette videos recorded or uploaded yet</p>
+                            <div className="flex items-center justify-center gap-2">
+                              <button
+                                onClick={() => {
+                                  setLecDate(folder.dateFolder);
+                                  setLecTitle('');
+                                  setLecFile(null);
+                                  setLecUploadError(null);
+                                  setLecturetteUploadModal({ dateFolder: folder.dateFolder });
+                                }}
+                                className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-3 py-1.5 text-xs inline-flex items-center gap-1.5 transition-colors shadow-sm"
+                              >
+                                <Upload className="w-3.5 h-3.5" /> Upload Video
+                              </button>
+                              <button
+                                onClick={() => onNavigate('lecturette')}
+                                className="btn-secondary text-xs inline-flex items-center gap-1.5"
+                              >
+                                <Video className="w-3.5 h-3.5" /> Record Live
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -538,10 +631,10 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                               <div key={lec.id} className="card-sm p-3 border border-slate-200 dark:border-dark-600 hover:border-purple-500/40 transition-colors space-y-2">
                                 {/* Video thumbnail + play */}
                                 <div
-                                  onClick={() => setVideoModal({ url: lec.url, title: lec.title })}
+                                  onClick={() => setVideoModal({ url: apiUrl(lec.url), title: lec.title })}
                                   className="aspect-video bg-black rounded-lg overflow-hidden relative cursor-pointer group flex items-center justify-center"
                                 >
-                                  <video src={lec.url} className="w-full h-full object-cover" />
+                                  <video src={apiUrl(lec.url)} className="w-full h-full object-cover" />
                                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center group-hover:bg-black/20 transition-colors">
                                     <div className="w-10 h-10 rounded-full bg-white/90 text-slate-900 flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
                                       <Play className="w-4 h-4 fill-current" />
@@ -784,6 +877,117 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
               >
                 <Upload className="w-3.5 h-3.5" />
                 <span>{uploadingPdf ? 'Uploading PDF...' : 'Upload PDF'}</span>
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
+      )}
+
+      {/* Lecturette Video Upload Modal */}
+      {lecturetteUploadModal && createPortal(
+        <div className="fixed inset-0 z-[110] bg-black/80 flex items-center justify-center p-4">
+          <form
+            onSubmit={handleUploadLecturette}
+            className="card max-w-md w-full p-5 space-y-4 shadow-2xl border border-slate-200 dark:border-dark-600"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-dark-700">
+              <div className="flex items-center gap-2">
+                <Video className="w-4 h-4 text-purple-500" />
+                <h3 className="font-bold text-sm text-slate-800 dark:text-white">
+                  Upload Lecturette Video ({lecturetteUploadModal.dateFolder})
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLecturetteUploadModal(null)}
+                className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {lecUploadError && (
+              <p className="text-red-500 text-xs font-medium">{lecUploadError}</p>
+            )}
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="label">Date Folder</label>
+                <input
+                  type="date"
+                  value={lecDate || lecturetteUploadModal.dateFolder}
+                  onChange={e => setLecDate(e.target.value)}
+                  required
+                  className="input py-1.5 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="label">Lecturette Title</label>
+                <input
+                  type="text"
+                  value={lecTitle}
+                  onChange={e => setLecTitle(e.target.value)}
+                  placeholder={`Lecturette ${lecDate || lecturetteUploadModal.dateFolder}`}
+                  className="input py-1.5 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="label">Select Video File (.mp4, .webm, .mov, etc.)</label>
+                <input
+                  type="file"
+                  accept="video/mp4,video/webm,video/quicktime,video/mkv,video/x-matroska,video/*,.mp4,.webm,.mov,.mkv"
+                  required
+                  onChange={e => {
+                    const file = e.target.files?.[0] || null;
+                    setLecFile(file);
+                    if (file && !lecTitle) {
+                      const nameWithoutExt = file.name.replace(/\.[^/.]+$/, '');
+                      setLecTitle(nameWithoutExt);
+                    }
+                  }}
+                  className="w-full text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-purple-50 dark:file:bg-purple-950/40 file:text-purple-700 dark:file:text-purple-300 hover:file:bg-purple-100"
+                />
+                {lecFile && (
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Selected: {lecFile.name} ({(lecFile.size / (1024 * 1024)).toFixed(1)} MB)
+                  </p>
+                )}
+              </div>
+
+              {uploadingLec && lecUploadProgress !== null && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-slate-400">
+                    <span>Uploading to cloud...</span>
+                    <span>{lecUploadProgress}%</span>
+                  </div>
+                  <div className="w-full bg-slate-200 dark:bg-dark-700 h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-purple-600 h-full transition-all duration-200"
+                      style={{ width: `${lecUploadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 justify-end pt-2 border-t border-slate-100 dark:border-dark-700">
+              <button
+                type="button"
+                onClick={() => setLecturetteUploadModal(null)}
+                className="btn-secondary py-1 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={uploadingLec || !lecFile}
+                className="btn-primary bg-purple-600 hover:bg-purple-500 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>{uploadingLec ? (lecUploadProgress !== null ? `Uploading (${lecUploadProgress}%)...` : 'Saving...') : 'Upload Video'}</span>
               </button>
             </div>
           </form>

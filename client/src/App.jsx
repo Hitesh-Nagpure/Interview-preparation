@@ -122,8 +122,16 @@ export default function App() {
         .then(r => r.json())
         .then(d => setDbConnected(d.dbConnected))
         .catch(() => setDbConnected(false));
-    }, 15000);
-    return () => clearInterval(interval);
+      fetchFolders();
+    }, 25000);
+
+    const onFocus = () => fetchFolders();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   const handleStartTest = (testType, dateFolder) => {

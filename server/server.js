@@ -70,7 +70,7 @@ function uploadBufferToCloudinary(buffer, originalname, folder = 'ssb-psych-prep
 // ── Multer — always use memory storage; we decide where to put files after ────
 const memoryUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 } // 100 MB per file (supports video/PDF)
+  limits: { fileSize: 250 * 1024 * 1024 } // 250 MB per file (supports video/PDF)
 });
 
 // ── Local disk fallback (for development without Cloudinary) ──────────────────
@@ -256,12 +256,6 @@ async function seedInitialDataIfEmpty() {
       });
       console.log('✅ Default SSB practice batch seeded!');
     }
-
-    // Requirement 2: Ensure zero reviews and notes by default across all folders
-    await DateFolder.updateMany(
-      {},
-      { $set: { reviews: [], 'notes.content': '', 'notes.plainText': '', 'notes.updatedAt': null } }
-    );
   } catch (seedErr) {
     console.warn('Seed notice:', seedErr.message);
   }
@@ -657,6 +651,29 @@ app.delete('/api/folders/:dateFolder/reviews/:reviewId', async (req, res) => {
       await folder.save();
     }
     res.json({ success: true, message: 'Audio review deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6f. GET reviews and notes for a specific folder
+app.get('/api/folders/:dateFolder/reviews', async (req, res) => {
+  try {
+    const { dateFolder } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+    res.json({
+      reviews: (folder.reviews || []).map(r => ({
+        id: r.id,
+        title: r.title,
+        duration: r.duration,
+        url: r.url,
+        publicId: r.publicId,
+        reviewerName: r.reviewerName || '',
+        recordedAt: r.recordedAt
+      })),
+      notes: folder.notes || { content: '', plainText: '', author: '', updatedAt: null }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

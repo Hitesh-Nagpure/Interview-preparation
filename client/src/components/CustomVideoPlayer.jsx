@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize2, Download, Gauge, Check } from 'lucide-react';
+import { apiUrl } from '../utils/api';
 
 const SPEED_OPTIONS = [0.25, 0.5, 1, 1.5, 1.75, 2];
 
@@ -156,7 +157,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
         document.body.removeChild(a);
         return;
       }
-      let dlUrl = src;
+      let dlUrl = apiUrl(src);
       if (src.includes('cloudinary.com') && src.includes('/upload/')) {
         dlUrl = src.replace('/upload/', '/upload/fl_attachment/');
       }
@@ -168,7 +169,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
       a.click();
       document.body.removeChild(a);
     } catch (err) {
-      window.open(src, '_blank');
+      window.open(apiUrl(src), '_blank');
     }
   };
 
@@ -183,6 +184,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   };
 
   const maxVal = duration && !isNaN(duration) && duration !== Infinity ? duration : (fallbackDuration || 1);
+  const resolvedSrc = apiUrl(src);
 
   return (
     <div
@@ -193,7 +195,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     >
       <video
         ref={videoRef}
-        src={src}
+        src={resolvedSrc}
         playsInline
         preload="auto"
         onLoadedMetadata={handleLoadedMetadata}

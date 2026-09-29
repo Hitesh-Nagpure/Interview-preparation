@@ -68,8 +68,57 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
   const [activeAudioProgress, setActiveAudioProgress] = useState(0);
   const [activeAudioCurrentTime, setActiveAudioCurrentTime] = useState(0);
   const [activeAudioDuration, setActiveAudioDuration] = useState(0);
+  const [isFetchingFresh, setIsFetchingFresh] = useState(false);
 
-  // Synchronize initial content and reviews (zero by default)
+  // Active sync function to pull latest reviews & notes from MongoDB
+  const fetchLatestData = useCallback(async (silent = false) => {
+    if (!dateFolder) return;
+    if (!silent) setIsFetchingFresh(true);
+    try {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/reviews`));
+      if (!res.ok) {
+        // Fallback to GET /api/folders/:dateFolder
+        const fullRes = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}`));
+        if (fullRes.ok) {
+          const folderData = await fullRes.json();
+          if (Array.isArray(folderData.reviews)) {
+            setReviews(folderData.reviews);
+          }
+          if (folderData.notes?.content && !isSavingNotes) {
+            setContent(folderData.notes.content);
+            if (editorRef.current && (!editorRef.current.innerHTML || editorRef.current.innerHTML === '<p><br></p>')) {
+              editorRef.current.innerHTML = folderData.notes.content;
+            }
+          }
+          if (folderData.notes?.updatedAt) {
+            setLastSavedTime(new Date(folderData.notes.updatedAt));
+          }
+        }
+        return;
+      }
+      const data = await res.json();
+      if (Array.isArray(data.reviews)) {
+        setReviews(data.reviews);
+      }
+      if (data.notes?.content && !isSavingNotes) {
+        if (!editorRef.current || !editorRef.current.innerHTML || editorRef.current.innerHTML === '<p><br></p>') {
+          setContent(data.notes.content);
+          if (editorRef.current) {
+            editorRef.current.innerHTML = data.notes.content;
+          }
+        }
+      }
+      if (data.notes?.updatedAt) {
+        setLastSavedTime(new Date(data.notes.updatedAt));
+      }
+    } catch (err) {
+      console.warn('Sync error:', err);
+    } finally {
+      if (!silent) setIsFetchingFresh(false);
+    }
+  }, [dateFolder, isSavingNotes]);
+
+  // Synchronize on mount and when dateFolder changes
   useEffect(() => {
     const initialHtml = initialNotes?.content || '';
     setContent(initialHtml);
@@ -79,11 +128,25 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
     if (initialNotes?.updatedAt) {
       setLastSavedTime(new Date(initialNotes.updatedAt));
     }
-  }, [dateFolder, initialNotes]);
-
-  useEffect(() => {
     setReviews(initialReviews || []);
-  }, [initialReviews]);
+    // Fetch latest fresh data immediately from database
+    fetchLatestData(true);
+  }, [dateFolder, initialNotes, initialReviews, fetchLatestData]);
+
+  // Background auto-sync interval every 12 seconds so distant mentor/candidate reviews appear automatically
+  useEffect(() => {
+    const timer = setInterval(() => {
+      fetchLatestData(true);
+    }, 12000);
+
+    const onWindowFocus = () => fetchLatestData(true);
+    window.addEventListener('focus', onWindowFocus);
+
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onWindowFocus);
+    };
+  }, [fetchLatestData]);
 
   // Clean up any object URLs on unmount
   useEffect(() => {
@@ -299,6 +362,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       if (onSaveSuccess) {
         onSaveSuccess({ reviews: [data.review, ...reviews] });
       }
+      fetchLatestData(true);
     } catch (err) {
       console.error('Review upload failed:', err);
       setUploadError(err.message);
@@ -326,6 +390,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       if (onSaveSuccess) {
         onSaveSuccess({ reviews: reviews.filter((r) => r.id !== reviewId) });
       }
+      fetchLatestData(true);
     } catch (err) {
       alert(`Delete error: ${err.message}`);
     }
@@ -345,7 +410,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       activeAudioElement.pause();
     }
 
-    const audio = new Audio(review.url);
+    const audio = new Audio(apiUrl(review.url));
     setActiveAudioElement(audio);
     setPlayingReviewId(review.id);
     setActiveAudioCurrentTime(0);
@@ -410,6 +475,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       if (onSaveSuccess) {
         onSaveSuccess({ notes: data.notes });
       }
+      fetchLatestData(true);
     } catch (err) {
       console.error('Save notes error:', err);
       setNotesSaveStatus('error');
@@ -718,6 +784,25 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
 
         {/* SAVED REVIEWS LIST (Zero by default) */}
         <div className="space-y-2 pt-1">
+          <div className="flex items-center justify-between pt-1 pb-1">
+            <div className="flex items-center gap-2">
+              <h4 className="text-xs font-bold text-slate-800 dark:text-white uppercase tracking-wider font-mono">
+                Saved Audio Reviews ({reviews.length})
+              </h4>
+              <span className="text-[10px] text-slate-400">· Synced live</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => fetchLatestData(false)}
+              disabled={isFetchingFresh}
+              className="px-2.5 py-1 rounded-lg bg-white dark:bg-dark-800 border border-slate-200 dark:border-dark-700 text-slate-600 dark:text-slate-300 hover:text-amber-500 dark:hover:text-amber-400 hover:border-amber-500/30 transition-all flex items-center gap-1.5 text-xs shadow-sm disabled:opacity-50"
+              title="Refresh mentor & candidate reviews"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isFetchingFresh ? 'animate-spin text-amber-500' : ''}`} />
+              <span>{isFetchingFresh ? 'Syncing...' : 'Refresh Reviews'}</span>
+            </button>
+          </div>
+
           {reviews.length === 0 ? (
             /* Zero Reviews Default State */
             <div className="p-6 text-center rounded-xl bg-white/50 dark:bg-dark-900/40 border border-dashed border-slate-200 dark:border-dark-700 space-y-1.5">
@@ -764,7 +849,13 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
                           </p>
                           {rev.reviewerName && (
                             <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 flex items-center gap-1">
-                              <User className="w-2.5 h-2.5" /> {rev.reviewerName}
+                              <User className="w-2.5 h-2.5" />
+                              <span>{rev.reviewerName}</span>
+                              {reviewerName.trim() && rev.reviewerName.trim().toLowerCase() === reviewerName.trim().toLowerCase() ? (
+                                <span className="text-[9px] font-mono text-emerald-600 dark:text-emerald-400 font-bold ml-1">(You)</span>
+                              ) : (
+                                <span className="text-[9px] font-mono text-purple-600 dark:text-purple-400 font-bold ml-1">(Remote)</span>
+                              )}
                             </span>
                           )}
                           {rev.duration > 0 && (
@@ -798,7 +889,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
                     {/* Actions: Download & Delete */}
                     <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0">
                       <a
-                        href={rev.url}
+                        href={apiUrl(rev.url)}
                         download={`audio-review-${rev.id}.webm`}
                         target="_blank"
                         rel="noopener noreferrer"

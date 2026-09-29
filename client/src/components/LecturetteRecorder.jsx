@@ -69,6 +69,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const startTimeRef = useRef(0);
   const totalDurationRef = useRef(0); // in seconds, tracked in background
   const streamRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   // Safely stop all active stream tracks
   const stopCamera = () => {
@@ -388,9 +389,9 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const handleDownloadUrl = (url, title) => {
     if (!url) return;
     try {
-      let dlUrl = url;
-      if (url.includes('cloudinary.com') && url.includes('/upload/')) {
-        dlUrl = url.replace('/upload/', '/upload/fl_attachment/');
+      let dlUrl = apiUrl(url);
+      if (dlUrl.includes('cloudinary.com') && dlUrl.includes('/upload/')) {
+        dlUrl = dlUrl.replace('/upload/', '/upload/fl_attachment/');
       }
       const a = document.createElement('a');
       a.href = dlUrl;
@@ -400,7 +401,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       a.click();
       document.body.removeChild(a);
     } catch (e) {
-      window.open(url, '_blank');
+      window.open(apiUrl(url), '_blank');
     }
   };
 
@@ -531,6 +532,51 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
   }, [selectedFolder]);
 
+  // Handle user selecting an already recorded video file from disk
+  const handleVideoFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate video format
+    if (!file.type.startsWith('video/') && !file.name.match(/\.(mp4|webm|mov|mkv|avi|m4v|3gp)$/i)) {
+      setError('Please select a valid video file (.mp4, .webm, .mov, etc.)');
+      return;
+    }
+
+    // Stop active camera session cleanly
+    stopCamera();
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    if (bellIntervalRef.current) clearInterval(bellIntervalRef.current);
+
+    setError(null);
+    setUploadSuccess(null);
+
+    // Create object URL for local preview
+    const videoUrl = URL.createObjectURL(file);
+    setRecordedBlob(file);
+    setRecordedUrl(videoUrl);
+
+    // Pre-populate title from file name
+    const baseName = file.name.replace(/\.[^/.]+$/, '').trim();
+    setRecTitle(baseName || `Lecturette ${recDate || selectedFolder}`);
+
+    // Read duration from video metadata
+    const tempVideo = document.createElement('video');
+    tempVideo.preload = 'metadata';
+    tempVideo.src = videoUrl;
+    tempVideo.onloadedmetadata = () => {
+      const dur = Math.round(tempVideo.duration) || 0;
+      totalDurationRef.current = dur;
+      setVideoDuration(dur);
+    };
+
+    // Transition directly to STOPPED state (Studio Review & Cloud Save mode)
+    setRecordingStatus('STOPPED');
+
+    // Reset input so re-selecting same file works
+    e.target.value = '';
+  };
+
   // Upload to Cloudinary with real-time progress
   const handleSaveToCloudinary = async () => {
     if (!recordedBlob) return;
@@ -539,14 +585,17 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     setError(null);
     try {
       const fd = new FormData();
-      const ext = recordedBlob.type.includes('mp4') ? '.mp4' : '.webm';
-      const file = new File([recordedBlob], `lecturette-${Date.now()}${ext}`, { type: recordedBlob.type });
-      fd.append('video', file);
+      let fileToUpload = recordedBlob;
+      if (!(recordedBlob instanceof File)) {
+        const ext = recordedBlob.type && recordedBlob.type.includes('mp4') ? '.mp4' : '.webm';
+        fileToUpload = new File([recordedBlob], `lecturette-${Date.now()}${ext}`, { type: recordedBlob.type || 'video/webm' });
+      }
+      fd.append('video', fileToUpload);
       const targetFolder = (recDate || selectedFolder).trim();
       const targetTitle = (recTitle || `Lecturette ${targetFolder}`).trim();
       fd.append('title', targetTitle);
       fd.append('recordedDate', targetFolder);
-      fd.append('duration', totalDurationRef.current.toString());
+      fd.append('duration', (totalDurationRef.current || videoDuration || 0).toString());
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -641,8 +690,8 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
           </p>
         </div>
 
-        {/* Target Folder Selector */}
-        <div className="flex items-center gap-2">
+        {/* Target Folder Selector & Upload Button */}
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
           <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 shrink-0">
             Save to Folder:
           </label>
@@ -660,6 +709,16 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
               <option value={today}>{today} (Today)</option>
             )}
           </select>
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="btn-secondary bg-purple-600/10 text-purple-600 dark:text-purple-400 hover:bg-purple-600/20 border-purple-500/30 text-xs py-1 px-3 flex items-center gap-1.5 transition-colors shadow-sm shrink-0"
+            title="Upload a lecturette video file from your device"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>Upload Video</span>
+          </button>
         </div>
       </div>
 
@@ -713,9 +772,18 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 space-y-3">
                   <VideoOff className="w-10 h-10 text-slate-600" />
                   <p className="text-xs">Camera is offline</p>
-                  <button onClick={startCamera} className="btn-primary text-xs flex items-center gap-1.5">
-                    <Video className="w-3.5 h-3.5" /> Enable Camera
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={startCamera} className="btn-primary text-xs flex items-center gap-1.5">
+                      <Video className="w-3.5 h-3.5" /> Enable Camera
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="btn-secondary bg-slate-800 hover:bg-slate-700 text-purple-300 border-slate-700 text-xs flex items-center gap-1.5 shadow"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-purple-400" /> Upload Video
+                    </button>
+                  </div>
                 </div>
               )}
               {/* Countdown Overlay */}
@@ -879,6 +947,16 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                     <span className="w-2.5 h-2.5 rounded-full bg-white" />
                     <span>Start Recording</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="btn-secondary bg-purple-600/20 text-purple-300 hover:bg-purple-600/30 border-purple-500/40 px-3.5 py-1.5 text-xs flex items-center gap-1.5 transition-colors"
+                    title="Upload an already recorded lecturette video"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Upload Lecturette Video</span>
+                  </button>
                 </div>
               )}
 
@@ -993,7 +1071,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   onClick={() => setPlayingVideo(lec)}
                   className="aspect-video bg-black rounded-md overflow-hidden relative cursor-pointer flex items-center justify-center group-hover:opacity-90"
                 >
-                  <video src={lec.url} className="w-full h-full object-cover" />
+                  <video src={apiUrl(lec.url)} className="w-full h-full object-cover" />
                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
                     <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
                       <Play className="w-4 h-4 fill-current" />
@@ -1065,7 +1143,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
             </div>
             <div className="p-3">
               <CustomVideoPlayer
-                src={playingVideo.url}
+                src={apiUrl(playingVideo.url)}
                 autoPlay={true}
                 downloadFilename={(playingVideo.title || 'lecturette-video').replace(/[^a-zA-Z0-9_-]/g, '_')}
                 className="w-full aspect-video rounded bg-black"
@@ -1187,6 +1265,14 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
           </div>
         </div>
       )}
+      {/* Hidden File Input for Video Upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="video/mp4,video/webm,video/quicktime,video/mkv,video/x-matroska,video/*,.mp4,.webm,.mov,.mkv"
+        onChange={handleVideoFileSelected}
+        className="hidden"
+      />
     </div>
   );
 }
