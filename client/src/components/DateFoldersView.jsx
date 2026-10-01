@@ -1,15 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Folder, Play, Trash2, Eye, EyeOff, Plus, Search, X,
   ChevronDown, ChevronUp, AlertTriangle, Layers, ZoomIn,
   RotateCcw, Leaf, ChevronLeft, ChevronRight, FileText, Video,
-  Upload, Edit3, Download, Calendar, Check, Image as ImageIcon, AlignLeft
+  Upload, Edit3, Download, Calendar, Check, Image as ImageIcon, AlignLeft,
+  Compass, Map
 } from 'lucide-react';
 import PdfViewerModal from './PdfViewerModal';
 import CustomVideoPlayer from './CustomVideoPlayer';
 import NotesEditor from './NotesEditor';
 import { apiUrl } from '../utils/api';
+import PanZoomModal from './PanZoomModal';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '';
@@ -47,6 +49,80 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
   const [lecUploadProgress, setLecUploadProgress] = useState(null);
   const [lecUploadError, setLecUploadError] = useState(null);
 
+  // GPE Upload state
+  const [gpeUploadModal, setGpeUploadModal] = useState(null); // { dateFolder }
+  const [gpeFileInput, setGpeFileInput] = useState(null);
+  const [gpeFilePreview, setGpeFilePreview] = useState(null);
+  const [gpeNarrativeFileInput, setGpeNarrativeFileInput] = useState(null);
+  const [gpeNarrativeFilePreview, setGpeNarrativeFilePreview] = useState(null);
+  const [gpeNarrativeTab, setGpeNarrativeTab] = useState('text'); // 'text' | 'image'
+  const [gpeTitleInput, setGpeTitleInput] = useState('');
+  const [gpeScaleInput, setGpeScaleInput] = useState('1 cm = 2 km');
+  const [gpeDescInput, setGpeDescInput] = useState('');
+  const [gpeModelSolInput, setGpeModelSolInput] = useState('');
+  const [uploadingGpe, setUploadingGpe] = useState(false);
+  const [gpeUploadError, setGpeUploadError] = useState(null);
+  const gpeModalFileRef = useRef(null);
+  const gpeModalNarrativeFileRef = useRef(null);
+
+  const handleUploadGpeModal = async (e) => {
+    e.preventDefault();
+    if (!gpeFileInput || !gpeUploadModal) return;
+    if (!gpeDescInput.trim() && !gpeNarrativeFileInput) {
+      setGpeUploadError('Please provide problem statement either by uploading narrative card image or pasting text');
+      return;
+    }
+    setUploadingGpe(true);
+    setGpeUploadError(null);
+    try {
+      const fd = new FormData();
+      fd.append('map', gpeFileInput);
+      if (gpeNarrativeFileInput) {
+        fd.append('narrativeImage', gpeNarrativeFileInput);
+      }
+      fd.append('title', (gpeTitleInput || `GPE Exercise ${gpeUploadModal.dateFolder}`).trim());
+      fd.append('scale', (gpeScaleInput || '1 cm = 2 km').trim());
+      fd.append('description', gpeDescInput.trim());
+      fd.append('modelSolution', gpeModelSolInput.trim());
+
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(gpeUploadModal.dateFolder)}/gpes`), {
+        method: 'POST',
+        body: fd
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to upload GPE');
+
+      setGpeUploadModal(null);
+      setGpeFileInput(null);
+      if (gpeFilePreview) URL.revokeObjectURL(gpeFilePreview);
+      setGpeFilePreview(null);
+      setGpeNarrativeFileInput(null);
+      if (gpeNarrativeFilePreview) URL.revokeObjectURL(gpeNarrativeFilePreview);
+      setGpeNarrativeFilePreview(null);
+      setGpeNarrativeTab('text');
+      setGpeTitleInput('');
+      setGpeDescInput('');
+      setGpeModelSolInput('');
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setGpeUploadError(err.message);
+    } finally {
+      setUploadingGpe(false);
+    }
+  };
+
+  const handleDeleteGpe = async (dateFolder, gpeId) => {
+    try {
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/gpes/${encodeURIComponent(gpeId)}`), {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error('Failed to delete GPE');
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
   const handleUploadLecturette = async (e) => {
     e.preventDefault();
     if (!lecFile || !lecturetteUploadModal) return;
@@ -56,13 +132,13 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
     try {
       const fd = new FormData();
       fd.append('video', lecFile);
-      const chosenDate = (lecDate || lecturetteUploadModal.dateFolder).trim();
+      const chosenDate = (lecDate || lecturetteUploadModal.dateFolder || today).trim();
       fd.append('recordedDate', chosenDate);
       fd.append('title', (lecTitle || lecFile.name.replace(/\.[^/.]+$/, '') || `Lecturette ${chosenDate}`).trim());
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', apiUrl(`/api/folders/${encodeURIComponent(lecturetteUploadModal.dateFolder)}/lecturette`));
+        xhr.open('POST', apiUrl(`/api/folders/${encodeURIComponent(chosenDate)}/lecturette`));
         xhr.upload.onprogress = (event) => {
           if (event.lengthComputable) {
             const pct = Math.round((event.loaded / event.total) * 100);
@@ -153,10 +229,20 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
 
   const handleDeleteLecturette = async (dateFolder, lecturetteId) => {
     try {
-      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/lecturette/${encodeURIComponent(lecturetteId)}`), {
+      if (!lecturetteId) throw new Error('No lecturette ID specified');
+      let res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder || 'any')}/lecturette/${encodeURIComponent(lecturetteId)}`), {
         method: 'DELETE'
       });
-      if (!res.ok) throw new Error('Failed to delete lecturette');
+      if (!res.ok) {
+        // Fallback to top-level delete route
+        res = await fetch(apiUrl(`/api/lecturettes/${encodeURIComponent(lecturetteId)}`), {
+          method: 'DELETE'
+        });
+      }
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Failed to delete lecturette');
+      }
       if (onRefresh) onRefresh();
     } catch (err) {
       alert(err.message);
@@ -169,6 +255,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
     const { type, dateFolder, id } = deleteResourceConfirm;
     if (type === 'solution') await handleDeleteSolution(dateFolder, id);
     else if (type === 'lecturette') await handleDeleteLecturette(dateFolder, id);
+    else if (type === 'gpe') await handleDeleteGpe(dateFolder, id);
     setDeleteResourceConfirm(null);
   };
 
@@ -268,6 +355,11 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                 <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 ml-2">
                   {tatCount > 0 && <span className="badge-indigo text-[10px] px-1.5">{tatCount} TAT</span>}
                   {watCount > 0 && <span className="badge-cyan text-[10px] px-1.5">{watCount} WAT</span>}
+                  {(folder.gpes?.length || 0) > 0 && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 hidden xs:inline-flex">
+                      {folder.gpes.length} GPE
+                    </span>
+                  )}
                   {(folder.solutions?.length || 0) > 0 && (
                     <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hidden xs:inline-flex">
                       {folder.solutions.length} Sol
@@ -278,9 +370,9 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                       {folder.lecturettes.length} Lec
                     </span>
                   )}
-                  {((folder.reviews?.length || 0) + (Boolean(folder.notes?.content?.trim() && folder.notes.content !== '<p><br></p>') ? 1 : 0)) > 0 && (
+                  {((folder.reviews?.length || 0) + (folder.noteCards?.length || (Boolean(folder.notes?.content?.trim() && folder.notes.content !== '<p><br></p>') ? 1 : 0))) > 0 && (
                     <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 hidden sm:inline-flex">
-                      {(folder.reviews?.length || 0) + (Boolean(folder.notes?.content?.trim() && folder.notes.content !== '<p><br></p>') ? 1 : 0)} Notes
+                      {(folder.reviews?.length || 0) + (folder.noteCards?.length || (Boolean(folder.notes?.content?.trim() && folder.notes.content !== '<p><br></p>') ? 1 : 0))} Notes
                     </span>
                   )}
                   <button
@@ -303,16 +395,19 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
               {/* Expanded: Tab-based navigation */}
               {open && (() => {
                 const activeTab = getFolderTab(folder.dateFolder);
+                const gpeCount = folder.gpes?.length || 0;
                 const solCount = folder.solutions?.length || 0;
                 const lecCount = folder.lecturettes?.length || 0;
 
                 const hasNotes = Boolean(folder.notes?.content && folder.notes.content.trim() && folder.notes.content !== '<p><br></p>');
+                const noteCardsCount = folder.noteCards?.length || (hasNotes ? 1 : 0);
                 const reviewsCount = folder.reviews?.length || 0;
-                const totalNotesCount = (hasNotes ? 1 : 0) + reviewsCount;
+                const totalNotesCount = noteCardsCount + reviewsCount;
 
                 const tabs = [
                   { id: 'tat', label: 'TAT', icon: ImageIcon, color: 'indigo', count: tatCount },
                   { id: 'wat', label: 'WAT', icon: AlignLeft, color: 'cyan', count: watCount },
+                  { id: 'gpe', label: 'GPE', icon: Compass, color: 'blue', count: gpeCount },
                   { id: 'solutions', label: 'Solutions', icon: FileText, color: 'emerald', count: solCount },
                   { id: 'lecturette', label: 'Lecturette', icon: Video, color: 'purple', count: lecCount },
                   { id: 'notes', label: 'Notes & Review', icon: FileText, color: 'amber', count: totalNotesCount },
@@ -322,6 +417,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                   const map = {
                     tat: isActive ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-500' : 'text-slate-500 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/5',
                     wat: isActive ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-b-2 border-cyan-500' : 'text-slate-500 hover:text-cyan-500 hover:bg-cyan-50 dark:hover:bg-cyan-500/5',
+                    gpe: isActive ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/5',
                     solutions: isActive ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-b-2 border-emerald-500' : 'text-slate-500 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/5',
                     lecturette: isActive ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-b-2 border-purple-500' : 'text-slate-500 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/5',
                     notes: isActive ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-b-2 border-amber-500' : 'text-slate-500 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-500/5',
@@ -500,6 +596,195 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                       </div>
                     )}
 
+                    {/* GPE Tab */}
+                    {activeTab === 'gpe' && (
+                      <div className="p-4 space-y-4">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2">
+                            <Compass className="w-5 h-5 text-blue-500" />
+                            <span className="text-2xl sm:text-3xl font-black text-blue-600 dark:text-blue-400 font-mono tracking-wider">GPE</span>
+                            <span className="text-sm text-slate-500 dark:text-slate-400 font-semibold">· {gpeCount} Exercise{gpeCount !== 1 ? 's' : ''}</span>
+                          </div>
+                          <button
+                            onClick={() => {
+                              setGpeUploadModal({ dateFolder: folder.dateFolder });
+                              setGpeTitleInput('');
+                              setGpeScaleInput('1 cm = 2 km');
+                              setGpeDescInput('');
+                              setGpeModelSolInput('');
+                              setGpeFileInput(null);
+                              setGpeFilePreview(null);
+                            }}
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors shadow-sm"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> Upload GPE
+                          </button>
+                        </div>
+
+                        {gpeCount > 0 ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {folder.gpes.map((gpe) => (
+                              <div key={gpe.id} className="card p-4 space-y-3 border border-slate-200 dark:border-dark-600 hover:border-blue-500/50 transition-colors">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <h4 className="font-bold text-slate-800 dark:text-white text-sm leading-snug">{gpe.title}</h4>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-bold">
+                                        Scale: {gpe.scale || '1 cm = 2 km'}
+                                      </span>
+                                      {(gpe.solutions?.length || 0) > 0 && (
+                                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                          {gpe.solutions.length} Plan{gpe.solutions.length !== 1 ? 's' : ''}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => setDeleteResourceConfirm({ type: 'gpe', dateFolder: folder.dateFolder, id: gpe.id, label: gpe.title })}
+                                    className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors shrink-0"
+                                    title="Delete GPE"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                {/* Map & Narrative Preview Thumbnails */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <div
+                                    onClick={() => setBigImage({ url: gpe.mapUrl, label: `${gpe.title} (${gpe.scale || '1 cm = 2 km'}) - Map Model` })}
+                                    className="relative aspect-video rounded-lg overflow-hidden bg-slate-900 cursor-pointer group border border-slate-200 dark:border-dark-700"
+                                  >
+                                    <img
+                                      src={gpe.mapUrl}
+                                      alt={gpe.title}
+                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                    />
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-semibold">
+                                      <ZoomIn className="w-4 h-4" />
+                                      <span>Map Model</span>
+                                    </div>
+                                  </div>
+
+                                  {gpe.narrativeImageUrl ? (
+                                    <div
+                                      onClick={() => setBigImage({ url: gpe.narrativeImageUrl, label: `${gpe.title} - Narrative Card` })}
+                                      className="relative aspect-video rounded-lg overflow-hidden bg-slate-900 cursor-pointer group border border-slate-200 dark:border-dark-700"
+                                    >
+                                      <img
+                                        src={gpe.narrativeImageUrl}
+                                        alt="Narrative Card"
+                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                      />
+                                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-semibold">
+                                        <ZoomIn className="w-4 h-4" />
+                                        <span>Narrative Card</span>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-dark-800 border border-slate-200 dark:border-dark-700 flex flex-col justify-center">
+                                      <span className="text-[10px] font-mono text-slate-400 font-bold uppercase">Pasted Narrative</span>
+                                      <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-3 leading-relaxed mt-1 font-sans">
+                                        {gpe.description || 'No text description'}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Problem Statement Excerpt if narrative card also has text */}
+                                {gpe.narrativeImageUrl && gpe.description && (
+                                  <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2 leading-relaxed">
+                                    {gpe.description}
+                                  </p>
+                                )}
+
+                                {/* Candidate Submitted Solution Sheets */}
+                                {(gpe.solutions?.length || 0) > 0 && (
+                                  <div className="pt-1.5 border-t border-slate-100 dark:border-dark-700 space-y-1">
+                                    <span className="text-[10px] font-mono text-slate-400 font-bold uppercase">
+                                      Candidate Solution Photos ({gpe.solutions.length})
+                                    </span>
+                                    <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+                                      {gpe.solutions.map((sol, sIdx) => (
+                                        <div
+                                          key={sol.id || sIdx}
+                                          onClick={() => {
+                                            if (sol.solutionImageUrl) {
+                                              setBigImage({ url: sol.solutionImageUrl, label: `${sol.author}'s Solution Photo` });
+                                            }
+                                          }}
+                                          className="shrink-0 p-1.5 rounded-lg border border-slate-200 dark:border-dark-700 bg-slate-50 dark:bg-dark-800 flex items-center gap-2 cursor-pointer hover:border-purple-500/50 transition-colors"
+                                          title="View solution photo"
+                                        >
+                                          {sol.solutionImageUrl ? (
+                                            <img
+                                              src={sol.solutionImageUrl}
+                                              alt="Solution"
+                                              className="w-8 h-8 rounded object-cover border border-purple-500/30"
+                                            />
+                                          ) : (
+                                            <FileText className="w-5 h-5 text-purple-500" />
+                                          )}
+                                          <div className="text-[10px]">
+                                            <p className="font-bold text-slate-800 dark:text-white truncate max-w-[100px]">{sol.author || 'Candidate'}</p>
+                                            <p className="text-slate-400 font-mono">{sol.submittedAt ? new Date(sol.submittedAt).toLocaleDateString() : ''}</p>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Actions */}
+                                <div className="flex items-center gap-2 pt-1 border-t border-slate-100 dark:border-dark-700 flex-wrap">
+                                  <button
+                                    onClick={() => onStartTest('GPE', folder.dateFolder, gpe.id)}
+                                    className="bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-md px-3 py-1.5 text-xs inline-flex items-center gap-1.5 transition-colors shadow-sm"
+                                  >
+                                    <Play className="w-3 h-3 fill-current" />
+                                    <span>Launch GPE Exercise</span>
+                                  </button>
+                                  <button
+                                    onClick={() => setBigImage({ url: gpe.mapUrl, label: `${gpe.title} (${gpe.scale || '1 cm = 2 km'})` })}
+                                    className="btn-secondary py-1.5 px-2.5 text-xs inline-flex items-center gap-1 text-slate-600 dark:text-slate-300"
+                                  >
+                                    <Eye className="w-3 h-3" />
+                                    <span>Map</span>
+                                  </button>
+                                  {gpe.narrativeImageUrl && (
+                                    <button
+                                      onClick={() => setBigImage({ url: gpe.narrativeImageUrl, label: `${gpe.title} - Narrative Card` })}
+                                      className="btn-secondary py-1.5 px-2.5 text-xs inline-flex items-center gap-1 text-slate-600 dark:text-slate-300"
+                                    >
+                                      <ImageIcon className="w-3 h-3" />
+                                      <span>Narrative Card</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 space-y-2">
+                            <p className="text-sm text-slate-400">No GPE exercises uploaded in this batch yet</p>
+                            <button
+                              onClick={() => {
+                                setGpeUploadModal({ dateFolder: folder.dateFolder });
+                                setGpeTitleInput('');
+                                setGpeScaleInput('1 cm = 2 km');
+                                setGpeDescInput('');
+                                setGpeModelSolInput('');
+                                setGpeFileInput(null);
+                                setGpeFilePreview(null);
+                              }}
+                              className="bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-md px-3 py-1.5 text-xs inline-flex items-center gap-1.5 transition-colors shadow-sm"
+                            >
+                              <Plus className="w-3.5 h-3.5" /> Upload GPE Map & Narrative
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {/* Solutions Tab */}
                     {activeTab === 'solutions' && (
                       <div className="p-4 space-y-3">
@@ -570,65 +855,40 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                     {/* Lecturette Tab */}
                     {activeTab === 'lecturette' && (
                       <div className="p-4 space-y-3">
-                        <div className="flex items-center justify-between flex-wrap gap-2">
                           <div className="flex items-center gap-2">
-                            <Video className="w-5 h-5 text-purple-500" />
-                            <span className="text-2xl sm:text-3xl font-black text-purple-600 dark:text-purple-400 font-mono tracking-wider">Lecturette</span>
-                            <span className="text-sm text-slate-500 dark:text-slate-400 font-semibold">· {lecCount} videos</span>
-                          </div>
+                              <Video className="w-5 h-5 text-purple-500" />
+                              <span className="text-2xl sm:text-3xl font-black text-purple-600 dark:text-purple-400 font-mono tracking-wider">Lecturette</span>
+                              <span className="text-sm text-slate-500 dark:text-slate-400 font-semibold">· {lecCount} videos</span>
+                            </div>
                           <div className="flex items-center gap-1.5 flex-wrap">
-                            <button
-                              onClick={() => {
-                                setLecDate(folder.dateFolder);
-                                setLecTitle('');
-                                setLecFile(null);
-                                setLecUploadError(null);
-                                setLecturetteUploadModal({ dateFolder: folder.dateFolder });
-                              }}
-                              className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors shadow-sm"
-                              title="Upload a pre-recorded lecturette video file"
-                            >
-                              <Upload className="w-3 h-3" /> Upload Video
-                            </button>
-                            <button
-                              onClick={() => onNavigate('lecturette')}
-                              className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors border border-slate-700"
-                              title="Record video using webcam"
-                            >
-                              <Video className="w-3 h-3" /> Record Live
-                            </button>
-                          </div>
-                        </div>
+                             <button
+                               onClick={() => onNavigate('lecturette')}
+                               className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-2.5 py-1 text-xs inline-flex items-center gap-1.5 transition-colors border border-purple-700"
+                               title="Record video using webcam"
+                             >
+                               <Video className="w-3 h-3" /> Record Live
+                             </button>
+                           </div>
 
                         {lecCount === 0 ? (
                           <div className="text-center py-8 space-y-3">
                             <Video className="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto" />
-                            <p className="text-sm text-slate-400">No lecturette videos recorded or uploaded yet</p>
-                            <div className="flex items-center justify-center gap-2">
-                              <button
-                                onClick={() => {
-                                  setLecDate(folder.dateFolder);
-                                  setLecTitle('');
-                                  setLecFile(null);
-                                  setLecUploadError(null);
-                                  setLecturetteUploadModal({ dateFolder: folder.dateFolder });
-                                }}
-                                className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-3 py-1.5 text-xs inline-flex items-center gap-1.5 transition-colors shadow-sm"
-                              >
-                                <Upload className="w-3.5 h-3.5" /> Upload Video
-                              </button>
+                            <p className="text-sm text-slate-400">No lecturette videos recorded yet</p>
+                            <div className="flex items-center justify-center">
                               <button
                                 onClick={() => onNavigate('lecturette')}
-                                className="btn-secondary text-xs inline-flex items-center gap-1.5"
+                                className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-3 py-1.5 text-xs inline-flex items-center gap-1.5 transition-colors shadow-sm"
                               >
-                                <Video className="w-3.5 h-3.5" /> Record Live
+                                <Video className="w-3.5 h-3.5" /> Go to Lecturette Studio
                               </button>
                             </div>
                           </div>
                         ) : (
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            {folder.lecturettes.map(lec => (
-                              <div key={lec.id} className="card-sm p-3 border border-slate-200 dark:border-dark-600 hover:border-purple-500/40 transition-colors space-y-2">
+                            {folder.lecturettes.map((lec, idx) => {
+                              const lecId = lec.id || lec._id?.toString() || lec._id || `lec-${idx}`;
+                              return (
+                              <div key={lecId} className="card-sm p-3 border border-slate-200 dark:border-dark-600 hover:border-purple-500/40 transition-colors space-y-2">
                                 {/* Video thumbnail + play */}
                                 <div
                                   onClick={() => setVideoModal({ url: apiUrl(lec.url), title: lec.title })}
@@ -651,14 +911,14 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                   </div>
                                   <div className="flex items-center gap-1 shrink-0">
                                     <button
-                                      onClick={() => setEditingLecturette({ id: lec.id, dateFolder: folder.dateFolder, title: lec.title || '', recordedDate: lec.recordedDate || folder.dateFolder })}
+                                      onClick={() => setEditingLecturette({ id: lecId, dateFolder: folder.dateFolder, title: lec.title || '', recordedDate: lec.recordedDate || folder.dateFolder })}
                                       className="p-1.5 rounded text-slate-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10 transition-colors"
                                       title="Edit title/date"
                                     >
                                       <Edit3 className="w-3.5 h-3.5" />
                                     </button>
                                     <button
-                                      onClick={() => setDeleteResourceConfirm({ type: 'lecturette', dateFolder: folder.dateFolder, id: lec.id, label: lec.title || 'this lecturette video' })}
+                                      onClick={() => setDeleteResourceConfirm({ type: 'lecturette', dateFolder: folder.dateFolder, id: lecId, label: lec.title || 'this lecturette video' })}
                                       className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                                       title="Delete video"
                                     >
@@ -667,7 +927,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                   </div>
                                 </div>
                               </div>
-                            ))}
+                            );})}
                           </div>
                         )}
                       </div>
@@ -678,9 +938,11 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                       <NotesEditor
                         dateFolder={folder.dateFolder}
                         initialNotes={folder.notes}
+                        initialNoteCards={folder.noteCards || []}
                         initialReviews={folder.reviews || []}
                         onSaveSuccess={(data) => {
                           if (data?.notes) folder.notes = data.notes;
+                          if (data?.noteCards) folder.noteCards = data.noteCards;
                           if (data?.reviews) folder.reviews = data.reviews;
                           if (onRefresh) onRefresh();
                         }}
@@ -694,11 +956,15 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
         })}
       </div>
 
-      {/* Big Image Preview */}
+      {/* Big Image Preview with Pan and Zoom */}
       {bigImage && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setBigImage(null)}>
-          <img src={bigImage} alt="" className="max-h-[90vh] max-w-full rounded-lg object-contain" />
-        </div>
+        <PanZoomModal
+          isOpen={Boolean(bigImage)}
+          onClose={() => setBigImage(null)}
+          imageUrl={bigImage.url || bigImage}
+          title={bigImage.label || 'Image Preview'}
+          badgeIcon={bigImage.label?.toLowerCase().includes('solution') ? FileText : ImageIcon}
+        />
       )}
 
       {/* Inspect Modal */}
@@ -885,109 +1151,179 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
       )}
 
       {/* Lecturette Video Upload Modal */}
-      {lecturetteUploadModal && createPortal(
-        <div className="fixed inset-0 z-[110] bg-black/80 flex items-center justify-center p-4">
-          <form
-            onSubmit={handleUploadLecturette}
-            className="card max-w-md w-full p-5 space-y-4 shadow-2xl border border-slate-200 dark:border-dark-600"
-          >
+
+      {/* GPE Upload Modal Dialog */}
+      {gpeUploadModal && createPortal(
+        <div className="fixed inset-0 z-[110] bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
+          <form onSubmit={handleUploadGpeModal} className="card max-w-lg w-full p-5 space-y-4 shadow-2xl border border-slate-200 dark:border-dark-600 my-8">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-dark-700">
               <div className="flex items-center gap-2">
-                <Video className="w-4 h-4 text-purple-500" />
+                <Compass className="w-5 h-5 text-blue-500" />
                 <h3 className="font-bold text-sm text-slate-800 dark:text-white">
-                  Upload Lecturette Video ({lecturetteUploadModal.dateFolder})
+                  Upload GPE Exercise ({gpeUploadModal.dateFolder})
                 </h3>
               </div>
               <button
                 type="button"
-                onClick={() => setLecturetteUploadModal(null)}
+                onClick={() => setGpeUploadModal(null)}
                 className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {lecUploadError && (
-              <p className="text-red-500 text-xs font-medium">{lecUploadError}</p>
+            {gpeUploadError && (
+              <p className="text-red-500 text-xs font-medium">{gpeUploadError}</p>
             )}
 
             <div className="space-y-3 text-xs">
-              <div>
-                <label className="label">Date Folder</label>
-                <input
-                  type="date"
-                  value={lecDate || lecturetteUploadModal.dateFolder}
-                  onChange={e => setLecDate(e.target.value)}
-                  required
-                  className="input py-1.5 text-xs"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="sm:col-span-2">
+                  <label className="label">Title</label>
+                  <input
+                    type="text"
+                    value={gpeTitleInput}
+                    onChange={e => setGpeTitleInput(e.target.value)}
+                    placeholder={`e.g. GPE Set 1 - ${gpeUploadModal.dateFolder}`}
+                    className="input py-1.5 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="label">Scale</label>
+                  <input
+                    type="text"
+                    value={gpeScaleInput}
+                    onChange={e => setGpeScaleInput(e.target.value)}
+                    placeholder="1 cm = 2 km"
+                    className="input py-1.5 text-xs font-mono"
+                  />
+                </div>
               </div>
 
               <div>
-                <label className="label">Lecturette Title</label>
+                <label className="label">GPE Map Image (Required)</label>
                 <input
-                  type="text"
-                  value={lecTitle}
-                  onChange={e => setLecTitle(e.target.value)}
-                  placeholder={`Lecturette ${lecDate || lecturetteUploadModal.dateFolder}`}
-                  className="input py-1.5 text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="label">Select Video File (.mp4, .webm, .mov, etc.)</label>
-                <input
+                  ref={gpeModalFileRef}
                   type="file"
-                  accept="video/mp4,video/webm,video/quicktime,video/mkv,video/x-matroska,video/*,.mp4,.webm,.mov,.mkv"
+                  accept="image/*"
                   required
                   onChange={e => {
-                    const file = e.target.files?.[0] || null;
-                    setLecFile(file);
-                    if (file && !lecTitle) {
-                      const nameWithoutExt = file.name.replace(/\.[^/.]+$/, '');
-                      setLecTitle(nameWithoutExt);
+                    const f = e.target.files?.[0] || null;
+                    setGpeFileInput(f);
+                    if (f) {
+                      if (gpeFilePreview) URL.revokeObjectURL(gpeFilePreview);
+                      setGpeFilePreview(URL.createObjectURL(f));
+                      if (!gpeTitleInput) setGpeTitleInput(f.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '));
                     }
                   }}
-                  className="w-full text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-purple-50 dark:file:bg-purple-950/40 file:text-purple-700 dark:file:text-purple-300 hover:file:bg-purple-100"
+                  className="w-full text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 dark:file:bg-blue-950/40 file:text-blue-700 dark:file:text-blue-300 hover:file:bg-blue-100"
                 />
-                {lecFile && (
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    Selected: {lecFile.name} ({(lecFile.size / (1024 * 1024)).toFixed(1)} MB)
-                  </p>
+                {gpeFilePreview && (
+                  <div className="mt-2 relative rounded-lg overflow-hidden border border-slate-200 dark:border-dark-700 max-h-40 bg-black/40 flex items-center justify-center">
+                    <img src={gpeFilePreview} alt="" className="max-h-36 w-auto object-contain" />
+                  </div>
                 )}
               </div>
 
-              {uploadingLec && lecUploadProgress !== null && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[11px] text-slate-400">
-                    <span>Uploading to cloud...</span>
-                    <span>{lecUploadProgress}%</span>
-                  </div>
-                  <div className="w-full bg-slate-200 dark:bg-dark-700 h-1.5 rounded-full overflow-hidden">
-                    <div
-                      className="bg-purple-600 h-full transition-all duration-200"
-                      style={{ width: `${lecUploadProgress}%` }}
-                    />
+              {/* Narrative Input (Image upload or Text Paste) */}
+              <div className="space-y-2 border border-slate-200 dark:border-dark-600 rounded-lg p-3 bg-slate-50/50 dark:bg-dark-800/40">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <label className="label mb-0">Problem Narrative (Image or Text)</label>
+                  <div className="flex items-center bg-slate-200/80 dark:bg-dark-700 p-0.5 rounded-lg text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setGpeNarrativeTab('text')}
+                      className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                        gpeNarrativeTab === 'text' ? 'bg-blue-600 text-white font-bold' : 'text-slate-500 dark:text-slate-300'
+                      }`}
+                    >
+                      Paste Text
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGpeNarrativeTab('image')}
+                      className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                        gpeNarrativeTab === 'image' ? 'bg-blue-600 text-white font-bold' : 'text-slate-500 dark:text-slate-300'
+                      }`}
+                    >
+                      Upload Card Image
+                    </button>
                   </div>
                 </div>
-              )}
+
+                {gpeNarrativeTab === 'image' ? (
+                  <div className="space-y-2 pt-1">
+                    <input
+                      ref={gpeModalNarrativeFileRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={e => {
+                        const f = e.target.files?.[0] || null;
+                        setGpeNarrativeFileInput(f);
+                        if (f) {
+                          if (gpeNarrativeFilePreview) URL.revokeObjectURL(gpeNarrativeFilePreview);
+                          setGpeNarrativeFilePreview(URL.createObjectURL(f));
+                        }
+                      }}
+                      className="w-full text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 dark:file:bg-blue-950/40 file:text-blue-700 dark:file:text-blue-300 hover:file:bg-blue-100"
+                    />
+                    {gpeNarrativeFilePreview && (
+                      <div className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-dark-700 max-h-40 bg-black/40 flex items-center justify-center">
+                        <img src={gpeNarrativeFilePreview} alt="" className="max-h-36 w-auto object-contain" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setGpeNarrativeFileInput(null);
+                            if (gpeNarrativeFilePreview) URL.revokeObjectURL(gpeNarrativeFilePreview);
+                            setGpeNarrativeFilePreview(null);
+                            if (gpeModalNarrativeFileRef.current) gpeModalNarrativeFileRef.current.value = '';
+                          }}
+                          className="absolute top-2 right-2 p-1 rounded bg-black/70 hover:bg-red-600 text-white transition-colors"
+                          title="Remove narrative card image"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <textarea
+                    rows={5}
+                    value={gpeDescInput}
+                    onChange={e => setGpeDescInput(e.target.value)}
+                    placeholder="Paste or write the GTO narrative here with situation, resources, time constraints..."
+                    className="input text-xs leading-relaxed resize-y scrollbar-thin font-sans"
+                  />
+                )}
+              </div>
+
+              <div>
+                <label className="label">Model Solution (Optional)</label>
+                <textarea
+                  rows={2}
+                  value={gpeModelSolInput}
+                  onChange={e => setGpeModelSolInput(e.target.value)}
+                  placeholder="Optional model solution points for candidate review..."
+                  className="input text-xs leading-relaxed resize-y scrollbar-thin font-mono"
+                />
+              </div>
             </div>
 
             <div className="flex gap-2 justify-end pt-2 border-t border-slate-100 dark:border-dark-700">
               <button
                 type="button"
-                onClick={() => setLecturetteUploadModal(null)}
+                onClick={() => setGpeUploadModal(null)}
                 className="btn-secondary py-1 text-xs"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                disabled={uploadingLec || !lecFile}
-                className="btn-primary bg-purple-600 hover:bg-purple-500 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
+                disabled={uploadingGpe || !gpeFileInput || (!gpeDescInput.trim() && !gpeNarrativeFileInput)}
+                className="btn-primary bg-blue-600 hover:bg-blue-500 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
               >
                 <Upload className="w-3.5 h-3.5" />
-                <span>{uploadingLec ? (lecUploadProgress !== null ? `Uploading (${lecUploadProgress}%)...` : 'Saving...') : 'Upload Video'}</span>
+                <span>{uploadingGpe ? 'Uploading GPE...' : 'Upload GPE Exercise'}</span>
               </button>
             </div>
           </form>

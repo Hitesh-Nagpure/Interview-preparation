@@ -6,6 +6,8 @@ import UploadView from './components/UploadView';
 import TestSimulator from './components/TestSimulator';
 import LecturetteRecorder from './components/LecturetteRecorder';
 import SolutionsView from './components/SolutionsView';
+import GpeSimulator from './components/GpeSimulator';
+import GpeView from './components/GpeView';
 import { soundEngine } from './utils/audio';
 import { apiUrl } from './utils/api';
 
@@ -13,7 +15,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(() => {
     try {
       const hash = window.location.hash.replace('#', '').trim();
-      const validTabs = ['dashboard', 'upload', 'lecturette', 'folders', 'solutions'];
+      const validTabs = ['dashboard', 'upload', 'gpe', 'lecturette', 'folders', 'solutions'];
       if (validTabs.includes(hash)) return hash;
       const saved = localStorage.getItem('ssb_active_tab');
       if (saved && validTabs.includes(saved)) return saved;
@@ -40,7 +42,7 @@ export default function App() {
       if (hash !== 'test') {
         setActiveTest(null);
       }
-      const validTabs = ['dashboard', 'upload', 'lecturette', 'folders', 'solutions'];
+      const validTabs = ['dashboard', 'upload', 'gpe', 'lecturette', 'folders', 'solutions'];
       if (validTabs.includes(hash)) {
         setActiveTab(hash);
       }
@@ -134,12 +136,12 @@ export default function App() {
     };
   }, []);
 
-  const handleStartTest = (testType, dateFolder) => {
+  const handleStartTest = (testType, dateFolder, gpeId = null) => {
     const df = dateFolder || folders[0]?.dateFolder;
     if (!df) { alert('No batch found. Upload one first.'); return; }
     // Set hash to #test so browser back button exits the test
     window.location.hash = 'test';
-    setActiveTest({ testType, dateFolder: df });
+    setActiveTest({ testType, dateFolder: df, gpeId });
   };
 
   const handleExitTest = () => {
@@ -181,6 +183,17 @@ export default function App() {
   };
 
   if (activeTest) {
+    if (activeTest.testType === 'GPE') {
+      return (
+        <GpeSimulator
+          gpeId={activeTest.gpeId}
+          dateFolder={activeTest.dateFolder}
+          onExit={handleExitTest}
+          isDark={isDark}
+          toggleTheme={() => setIsDark(d => !d)}
+        />
+      );
+    }
     return (
       <TestSimulator
         testType={activeTest.testType}
@@ -231,6 +244,14 @@ export default function App() {
                 onUploadSuccess={() => { fetchFolders(); setActiveTab('folders'); }}
                 onRefresh={fetchFolders}
                 onNavigate={handleNavigate}
+              />
+            )}
+            {activeTab === 'gpe' && (
+              <GpeView
+                folders={folders}
+                onStartTest={handleStartTest}
+                onNavigate={handleNavigate}
+                onRefresh={fetchFolders}
               />
             )}
             {activeTab === 'solutions' && (

@@ -31,6 +31,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // 0-100%
   const [uploadSuccess, setUploadSuccess] = useState(null);
+  const [uploadSuccessToast, setUploadSuccessToast] = useState(null); // floating toast message
   const [error, setError] = useState(null);
   const [playingVideo, setPlayingVideo] = useState(null); // { url, title, duration }
 
@@ -524,6 +525,18 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   };
 
   useEffect(() => {
+    if (folders && folders.length > 0) {
+      if (!selectedFolder || !folders.some(f => f.dateFolder === selectedFolder)) {
+        setSelectedFolder(folders[0].dateFolder);
+        setRecDate(folders[0].dateFolder);
+        if (!recTitle || recTitle.startsWith('Lecturette')) {
+          setRecTitle(`Lecturette ${folders[0].dateFolder}`);
+        }
+      }
+    }
+  }, [folders]);
+
+  useEffect(() => {
     if (selectedFolder) {
       setRecDate(selectedFolder);
       if (!recTitle || recTitle.startsWith('Lecturette')) {
@@ -591,7 +604,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         fileToUpload = new File([recordedBlob], `lecturette-${Date.now()}${ext}`, { type: recordedBlob.type || 'video/webm' });
       }
       fd.append('video', fileToUpload);
-      const targetFolder = (recDate || selectedFolder).trim();
+      const targetFolder = (recDate || selectedFolder || folders[0]?.dateFolder || today).trim();
       const targetTitle = (recTitle || `Lecturette ${targetFolder}`).trim();
       fd.append('title', targetTitle);
       fd.append('recordedDate', targetFolder);
@@ -627,6 +640,9 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       });
 
       setUploadSuccess(`Lecturette "${targetTitle}" saved successfully!`);
+      // Floating toast with auto-dismiss
+      setUploadSuccessToast(`✓ Lecturette "${targetTitle}" uploaded successfully!`);
+      setTimeout(() => setUploadSuccessToast(null), 5000);
       if (onRefresh) onRefresh();
     } catch (err) {
       setError(err.message);
@@ -651,7 +667,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       setEditingLecturette(null);
       if (onRefresh) onRefresh();
     } catch (err) {
-      alert(err.message);
+      setError(err.message);
     } finally {
       setLecEditSaving(false);
     }
@@ -660,21 +676,50 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   // Delete lecturette from folder
   const executeDeleteLecturette = async (folderDate, lecturetteId) => {
     try {
-      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(folderDate)}/lecturette/${encodeURIComponent(lecturetteId)}`), {
+      const idToUse = lecturetteId;
+      if (!idToUse) throw new Error('No lecturette specified');
+      let res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(folderDate || 'any')}/lecturette/${encodeURIComponent(idToUse)}`), {
         method: 'DELETE'
       });
-      if (!res.ok) throw new Error('Could not delete video');
+      if (!res.ok) {
+        // Fallback to top-level delete route
+        res = await fetch(apiUrl(`/api/lecturettes/${encodeURIComponent(idToUse)}`), {
+          method: 'DELETE'
+        });
+      }
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Could not delete video');
+      }
+      setDeleteConfirmLec(null);
       if (onRefresh) onRefresh();
     } catch (err) {
-      alert(err.message);
+      setError(err.message);
     }
   };
 
   // Aggregate past recorded lecturettes across all folders
-  const allLecturettes = folders.flatMap(f => (f.lecturettes || []).map(l => ({ ...l, folderDate: f.dateFolder })));
+  const allLecturettes = folders.flatMap(f =>
+    (f.lecturettes || []).map(l => ({
+      ...l,
+      id: l.id || l._id?.toString() || l._id,
+      _id: l._id?.toString() || l.id,
+      folderDate: f.dateFolder
+    }))
+  );
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+
+      {/* Floating Upload Success Toast */}
+      {uploadSuccessToast && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] animate-fadeIn pointer-events-none">
+          <div className="flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-2xl border border-emerald-500/40 bg-emerald-600 text-white text-sm font-semibold max-w-sm">
+            <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-200" />
+            <span className="leading-snug">{uploadSuccessToast}</span>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-dark-700 pb-4">
@@ -741,14 +786,24 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       )}
 
       {uploadSuccess && (
-        <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-600 dark:text-emerald-400 flex items-center justify-between gap-2">
+        <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-600 dark:text-emerald-400 flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             <span>{uploadSuccess}</span>
           </div>
-          <button onClick={handleRetake} className="btn-secondary text-[11px] py-0.5">
-            Record Another
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={handleRetake} className="btn-secondary text-[11px] py-0.5">
+              Record Another
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="btn-secondary bg-purple-600/10 text-purple-600 dark:text-purple-400 hover:bg-purple-600/20 text-[11px] py-0.5 flex items-center gap-1"
+            >
+              <Upload className="w-3 h-3" />
+              <span>Upload Another</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -1028,13 +1083,13 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   <button
                     onClick={handleSaveToCloudinary}
                     disabled={uploading}
-                    className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-3.5 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
+                    className="btn-primary bg-emerald-600 hover:bg-emerald-500 px-3.5 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40 shadow-sm"
                   >
                     <Upload className="w-3 h-3" />
                     <span>
                       {uploading
                         ? (uploadProgress !== null ? `Uploading (${uploadProgress}%)...` : 'Saving...')
-                        : 'Save'}
+                        : 'Upload & Save Video'}
                     </span>
                   </button>
                 </>
@@ -1062,9 +1117,11 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {allLecturettes.map(lec => (
+            {allLecturettes.map((lec, idx) => {
+              const lecId = lec.id || lec._id?.toString() || lec._id || `lec-${idx}`;
+              return (
               <div
-                key={lec.id}
+                key={lecId}
                 className="card p-3 space-y-2 relative group hover:border-purple-500/40 transition-colors"
               >
                 <div
@@ -1097,14 +1154,14 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                       <Download className="w-3.5 h-3.5" />
                     </button>
                     <button
-                      onClick={() => setEditingLecturette({ id: lec.id, folderDate: lec.folderDate, title: lec.title || '', recordedDate: lec.recordedDate || lec.folderDate })}
+                      onClick={() => setEditingLecturette({ id: lecId, folderDate: lec.folderDate, title: lec.title || '', recordedDate: lec.recordedDate || lec.folderDate })}
                       className="p-1.5 rounded text-slate-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10 transition-colors"
                       title="Edit title and date"
                     >
                       <Edit3 className="w-3.5 h-3.5" />
                     </button>
                     <button
-                      onClick={() => setDeleteConfirmLec({ folderDate: lec.folderDate, id: lec.id, title: lec.title || 'this lecturette' })}
+                      onClick={() => setDeleteConfirmLec({ folderDate: lec.folderDate, id: lecId, title: lec.title || 'this lecturette' })}
                       className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                       title="Delete lecturette video"
                     >
@@ -1113,7 +1170,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   </div>
                 </div>
               </div>
-            ))}
+            );})}
           </div>
         )}
       </div>

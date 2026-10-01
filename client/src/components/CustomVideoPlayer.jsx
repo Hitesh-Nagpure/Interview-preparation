@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize2, Download, Gauge, Check } from 'lucide-react';
+import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize2, Download, Gauge, Check, AlertCircle } from 'lucide-react';
 import { apiUrl } from '../utils/api';
 
 const SPEED_OPTIONS = [0.25, 0.5, 1, 1.5, 1.75, 2];
@@ -24,7 +24,22 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   const [controlsVisible, setControlsVisible] = useState(true);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
   const hideControlsTimer = useRef(null);
+
+  // Reload video element whenever src changes
+  useEffect(() => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setHasError(false);
+    setErrorMessage('');
+    setDuration(fallbackDuration || 0);
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current.load();
+    }
+  }, [src, fallbackDuration]);
 
   useEffect(() => {
     if (fallbackDuration > 0 && (!duration || isNaN(duration) || duration === Infinity)) {
@@ -53,8 +68,9 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     const v = videoRef.current;
     if (!v) return;
     if (v.paused || v.ended) {
-      v.play().catch(() => {});
-      setIsPlaying(true);
+      v.play().then(() => setIsPlaying(true)).catch((err) => {
+        console.warn('Playback error:', err);
+      });
     } else {
       v.pause();
       setIsPlaying(false);
@@ -64,15 +80,31 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   const handleLoadedMetadata = () => {
     const v = videoRef.current;
     if (!v) return;
+    setHasError(false);
     v.playbackRate = playbackSpeed;
     if (v.duration && !isNaN(v.duration) && v.duration !== Infinity && v.duration > 0) {
       setDuration(v.duration);
     } else if (fallbackDuration > 0) {
       setDuration(fallbackDuration);
+    } else {
+      // Workaround for MediaRecorder WebM duration Infinity bug in Chromium
+      v.currentTime = 1e101;
+      v.ontimeupdate = () => {
+        v.ontimeupdate = null;
+        v.currentTime = 0;
+        if (v.duration && !isNaN(v.duration) && v.duration !== Infinity) {
+          setDuration(v.duration);
+        }
+      };
     }
     if (autoPlay) {
       v.play().then(() => setIsPlaying(true)).catch(() => {});
     }
+  };
+
+  const handleVideoError = () => {
+    setHasError(true);
+    setErrorMessage('Preview could not be decoded by this browser. The file is preserved and can be downloaded or saved.');
   };
 
   const handleSpeedSelect = (speed) => {
@@ -184,7 +216,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   };
 
   const maxVal = duration && !isNaN(duration) && duration !== Infinity ? duration : (fallbackDuration || 1);
-  const resolvedSrc = apiUrl(src);
+  const resolvedSrc = src?.startsWith('blob:') || src?.startsWith('data:') ? src : apiUrl(src);
 
   return (
     <div
@@ -201,12 +233,34 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
         onLoadedMetadata={handleLoadedMetadata}
         onTimeUpdate={handleTimeUpdate}
         onEnded={() => setIsPlaying(false)}
+        onError={handleVideoError}
         onClick={togglePlay}
-        className="w-full h-full object-contain cursor-pointer"
+        className={`w-full h-full object-contain cursor-pointer ${hasError ? 'hidden' : 'block'}`}
       />
 
+      {/* Fallback Display if video cannot be decoded in browser */}
+      {hasError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-4 bg-slate-900 text-center space-y-3 z-10">
+          <div className="w-12 h-12 rounded-full bg-amber-500/10 text-amber-500 flex items-center justify-center">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <div className="space-y-1 max-w-sm">
+            <h4 className="text-xs font-bold text-slate-200">Video Preview Unavailable</h4>
+            <p className="text-[11px] text-slate-400 leading-relaxed">{errorMessage}</p>
+          </div>
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="btn-secondary bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 flex items-center gap-1.5 shadow"
+          >
+            <Download className="w-3.5 h-3.5 text-blue-400" />
+            <span>Download & Open in Media Player</span>
+          </button>
+        </div>
+      )}
+
       {/* Center Play Overlay when paused — Blue button */}
-      {!isPlaying && (
+      {!isPlaying && !hasError && (
         <div
           onClick={togglePlay}
           className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer transition-opacity z-10"

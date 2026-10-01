@@ -10,7 +10,14 @@ export const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
  */
 export function apiUrl(path) {
   if (!path) return '';
-  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  if (
+    path.startsWith('http://') ||
+    path.startsWith('https://') ||
+    path.startsWith('blob:') ||
+    path.startsWith('data:')
+  ) {
+    return path;
+  }
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   return API_BASE ? `${API_BASE}${cleanPath}` : cleanPath;
 }

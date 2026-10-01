@@ -137,6 +137,124 @@ const ReviewSchema = new mongoose.Schema({
   }
 });
 
+const NoteCardSchema = new mongoose.Schema({
+  id: {
+    type: String,
+    required: true
+  },
+  title: {
+    type: String,
+    default: ''
+  },
+  content: {
+    type: String,
+    required: true
+  },
+  plainText: {
+    type: String,
+    default: ''
+  },
+  author: {
+    type: String,
+    default: ''
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
+  }
+});
+
+const GpeSolutionSchema = new mongoose.Schema({
+  id: {
+    type: String,
+    required: true
+  },
+  author: {
+    type: String,
+    default: 'Candidate'
+  },
+  solutionText: {
+    type: String,
+    default: ''
+  },
+  solutionImageUrl: {
+    type: String,
+    default: ''
+  },
+  solutionPublicId: {
+    type: String,
+    default: ''
+  },
+  originalImageName: {
+    type: String,
+    default: ''
+  },
+  submittedAt: {
+    type: Date,
+    default: Date.now
+  }
+});
+
+const GpeSchema = new mongoose.Schema({
+  id: {
+    type: String,
+    required: true
+  },
+  title: {
+    type: String,
+    default: 'Group Planning Exercise'
+  },
+  mapUrl: {
+    type: String,
+    required: true
+  },
+  mapPublicId: {
+    type: String,
+    default: ''
+  },
+  originalMapName: {
+    type: String,
+    default: 'GPE_Map.jpg'
+  },
+  description: {
+    type: String,
+    default: ''
+  },
+  narrativeImageUrl: {
+    type: String,
+    default: ''
+  },
+  narrativePublicId: {
+    type: String,
+    default: ''
+  },
+  narrativeOriginalName: {
+    type: String,
+    default: ''
+  },
+  scale: {
+    type: String,
+    default: '1 cm = 2 km'
+  },
+  modelSolution: {
+    type: String,
+    default: ''
+  },
+  solutions: [GpeSolutionSchema],
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
+  }
+});
+
 const DateFolderSchema = new mongoose.Schema(
   {
     dateFolder: {
@@ -181,6 +299,8 @@ const DateFolderSchema = new mongoose.Schema(
     solutions: [SolutionSchema],
     lecturettes: [LecturetteSchema],
     reviews: [ReviewSchema],
+    gpes: [GpeSchema],
+    noteCards: [NoteCardSchema],
     notes: {
       content: {
         type: String,

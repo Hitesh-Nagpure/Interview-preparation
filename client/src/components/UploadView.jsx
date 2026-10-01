@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf, ArrowRight, FastForward, Video } from 'lucide-react';
+import { Upload, Image as ImageIcon, Type, Calendar, X, CheckCircle2, AlertCircle, Sparkles, FileText, RefreshCw, Leaf, ArrowRight, FastForward, Video, Compass, Map } from 'lucide-react';
 import { apiUrl } from '../utils/api';
+import CustomVideoPlayer from './CustomVideoPlayer';
 
 export default function UploadView({ initialDateFolder, onUploadSuccess, onRefresh }) {
   const today = new Date().toISOString().split('T')[0];
@@ -35,9 +36,105 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
   const [lecTitle, setLecTitle] = useState('');
   const [lecDate, setLecDate] = useState(initialDateFolder || today);
   const [lecFile, setLecFile] = useState(null);
+  const [lecPreview, setLecPreview] = useState(null);
+  const [lecDuration, setLecDuration] = useState(0);
   const [lecUploading, setLecUploading] = useState(false);
   const [lecProgress, setLecProgress] = useState(null);
   const lecFileRef = useRef(null);
+
+  // GPE (Group Planning Exercise) state
+  const [gpeTitle, setGpeTitle] = useState('');
+  const [gpeScale, setGpeScale] = useState('1 cm = 2 km');
+  const [gpeDescription, setGpeDescription] = useState('');
+  const [gpeNarrativeFile, setGpeNarrativeFile] = useState(null);
+  const [gpeNarrativePreview, setGpeNarrativePreview] = useState(null);
+  const [gpeNarrativeTab, setGpeNarrativeTab] = useState('text'); // 'text' | 'image'
+  const [gpeModelSolution, setGpeModelSolution] = useState('');
+  const [gpeMapFile, setGpeMapFile] = useState(null);
+  const [gpeMapPreview, setGpeMapPreview] = useState(null);
+  const [gpeUploading, setGpeUploading] = useState(false);
+  const gpeFileRef = useRef(null);
+  const gpeNarrativeFileRef = useRef(null);
+
+  const handleGpeMapChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setGpeMapFile(file);
+      if (gpeMapPreview) URL.revokeObjectURL(gpeMapPreview);
+      setGpeMapPreview(URL.createObjectURL(file));
+      if (!gpeTitle) {
+        setGpeTitle(file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '));
+      }
+    }
+  };
+
+  const handleGpeNarrativeChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setGpeNarrativeFile(file);
+      if (gpeNarrativePreview) URL.revokeObjectURL(gpeNarrativePreview);
+      setGpeNarrativePreview(URL.createObjectURL(file));
+    }
+  };
+
+  const uploadGpe = async (e) => {
+    e.preventDefault();
+    if (!gpeMapFile) {
+      showToast('error', 'Please upload a GPE map image.');
+      return;
+    }
+    const hasText = gpeDescription && gpeDescription.trim().length > 0;
+    const hasImage = Boolean(gpeNarrativeFile);
+    if (!hasText && !hasImage) {
+      showToast('error', 'Please provide the GPE narrative either by pasting text or uploading a narrative card image.');
+      return;
+    }
+    setGpeUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('map', gpeMapFile);
+      if (gpeNarrativeFile) {
+        fd.append('narrativeImage', gpeNarrativeFile);
+      }
+      const chosenDate = dateFolder || today;
+      const titleToUse = gpeTitle || `GPE Exercise ${chosenDate}`;
+      fd.append('title', titleToUse);
+      fd.append('description', gpeDescription || '');
+      fd.append('scale', gpeScale || '1 cm = 2 km');
+      fd.append('modelSolution', gpeModelSolution || '');
+
+      const targetFolder = chosenDate.trim();
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(targetFolder)}/gpes`), {
+        method: 'POST',
+        body: fd
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to upload GPE');
+
+      showToast('success', `GPE "${titleToUse}" uploaded successfully to batch ${targetFolder}.`);
+      setGpeMapFile(null);
+      if (gpeMapPreview) {
+        URL.revokeObjectURL(gpeMapPreview);
+        setGpeMapPreview(null);
+      }
+      setGpeNarrativeFile(null);
+      if (gpeNarrativePreview) {
+        URL.revokeObjectURL(gpeNarrativePreview);
+        setGpeNarrativePreview(null);
+      }
+      setGpeTitle('');
+      setGpeDescription('');
+      setGpeModelSolution('');
+      if (gpeFileRef.current) gpeFileRef.current.value = '';
+      if (gpeNarrativeFileRef.current) gpeNarrativeFileRef.current.value = '';
+      if (onRefresh) onRefresh();
+      if (onUploadSuccess) onUploadSuccess();
+    } catch (err) {
+      showToast('error', err.message);
+    } finally {
+      setGpeUploading(false);
+    }
+  };
 
   const uploadLecturetteVideo = async (e) => {
     e.preventDefault();
@@ -51,8 +148,9 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
       const defaultTitle = lecFile ? lecFile.name.replace(/\.[^/.]+$/, '') : `Lecturette ${chosenDate}`;
       fd.append('recordedDate', chosenDate);
       fd.append('title', lecTitle || defaultTitle);
+      if (lecDuration) fd.append('duration', lecDuration.toString());
 
-      const targetFolder = (dateFolder || chosenDate).trim();
+      const targetFolder = (lecDate || dateFolder || chosenDate).trim();
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -79,8 +177,13 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
         xhr.send(fd);
       });
 
-      showToast('success', `Lecturette video "${lecTitle || defaultTitle}" uploaded to batch ${targetFolder}.`);
+      showToast('success', `Lecturette video "${lecTitle || defaultTitle}" saved to batch ${targetFolder}.`);
       setLecFile(null);
+      if (lecPreview) {
+        URL.revokeObjectURL(lecPreview);
+        setLecPreview(null);
+      }
+      setLecDuration(0);
       setLecTitle('');
       if (lecFileRef.current) lecFileRef.current.value = '';
       if (onRefresh) onRefresh();
@@ -360,52 +463,64 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
       </div>
 
       {/* Tabs with larger test titles */}
-      <div className="flex border-b border-slate-200 dark:border-dark-600">
+      <div className="flex border-b border-slate-200 dark:border-dark-600 overflow-x-auto scrollbar-thin">
         <button
           onClick={() => setTab('tat')}
-          className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-all ${
+          className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 border-b-2 transition-all whitespace-nowrap shrink-0 ${
             tab === 'tat' ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
           <ImageIcon className="w-4 h-4" />
-          <span className="text-base sm:text-lg font-black tracking-wide font-mono">TAT</span>
-          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Pictures</span>
+          <span className="text-sm sm:text-base font-black tracking-wide font-mono">TAT</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium hidden sm:inline">Pictures</span>
           {totalTatCount > 0 && <span className="badge-indigo">{totalTatCount}</span>}
         </button>
         <button
           onClick={() => setTab('wat')}
-          className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-all ${
+          className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 border-b-2 transition-all whitespace-nowrap shrink-0 ${
             tab === 'wat' ? 'border-cyan-500 text-cyan-600 dark:text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
           <Type className="w-4 h-4" />
-          <span className="text-base sm:text-lg font-black tracking-wide font-mono">WAT</span>
-          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Words</span>
+          <span className="text-sm sm:text-base font-black tracking-wide font-mono">WAT</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium hidden sm:inline">Words</span>
           {watWords.length > 0 && <span className="badge-cyan">{watWords.length}</span>}
         </button>
         <button
           onClick={() => setTab('solutions')}
-          className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-all ${
+          className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 border-b-2 transition-all whitespace-nowrap shrink-0 ${
             tab === 'solutions' ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
           <FileText className="w-4 h-4" />
-          <span className="text-base sm:text-lg font-black tracking-wide font-mono">SOLUTIONS</span>
-          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">PDF</span>
+          <span className="text-sm sm:text-base font-black tracking-wide font-mono">SOL</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium hidden sm:inline">PDF</span>
           {solFile && <span className="badge-emerald">1</span>}
         </button>
         <button
           onClick={() => setTab('lecturette')}
-          className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-all ${
+          className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 border-b-2 transition-all whitespace-nowrap shrink-0 ${
             tab === 'lecturette' ? 'border-purple-500 text-purple-600 dark:text-purple-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
           <Video className="w-4 h-4" />
-          <span className="text-base sm:text-lg font-black tracking-wide font-mono">LECTURETTE</span>
-          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Video</span>
+          <span className="text-sm sm:text-base font-black tracking-wide font-mono">LEC</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium hidden sm:inline">Video</span>
           {lecFile && <span className="text-xs font-mono font-bold px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20">1</span>}
         </button>
+        <button
+          onClick={() => setTab('gpe')}
+          className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 border-b-2 transition-all whitespace-nowrap shrink-0 ${
+            tab === 'gpe' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+          }`}
+        >
+          <Compass className="w-4 h-4" />
+          <span className="text-sm sm:text-base font-black tracking-wide font-mono">GPE</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium hidden sm:inline">Exercise</span>
+          {gpeMapFile && <span className="text-xs font-mono font-bold px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">1</span>}
+        </button>
       </div>
+
 
       {/* TAT Tab */}
       {tab === 'tat' && (
@@ -787,9 +902,25 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
                 accept="video/mp4,video/webm,video/quicktime,video/mkv,video/x-matroska,video/*,.mp4,.webm,.mov,.mkv"
                 onChange={e => {
                   const f = e.target.files?.[0] || null;
+                  if (lecPreview) {
+                    URL.revokeObjectURL(lecPreview);
+                    setLecPreview(null);
+                  }
                   setLecFile(f);
-                  if (f && !lecTitle) {
-                    setLecTitle(f.name.replace(/\.[^/.]+$/, ''));
+                  if (f) {
+                    const url = URL.createObjectURL(f);
+                    setLecPreview(url);
+                    if (!lecTitle) {
+                      setLecTitle(f.name.replace(/\.[^/.]+$/, ''));
+                    }
+                    const tempV = document.createElement('video');
+                    tempV.preload = 'metadata';
+                    tempV.src = url;
+                    tempV.onloadedmetadata = () => {
+                      setLecDuration(Math.round(tempV.duration) || 0);
+                    };
+                  } else {
+                    setLecDuration(0);
                   }
                 }}
                 className="input py-1 text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-purple-50 dark:file:bg-purple-950/40 file:text-purple-700 dark:file:text-purple-300 hover:file:bg-purple-100"
@@ -797,17 +928,53 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
               {lecFile && (
                 <button
                   type="button"
-                  onClick={() => { setLecFile(null); if (lecFileRef.current) lecFileRef.current.value = ''; }}
+                  onClick={() => {
+                    setLecFile(null);
+                    if (lecPreview) {
+                      URL.revokeObjectURL(lecPreview);
+                      setLecPreview(null);
+                    }
+                    setLecDuration(0);
+                    if (lecFileRef.current) lecFileRef.current.value = '';
+                  }}
                   className="p-1.5 rounded text-slate-400 hover:text-red-500"
+                  title="Remove selected video"
                 >
                   <X className="w-4 h-4" />
                 </button>
               )}
             </div>
+
+            {/* Video File Information and Interactive Preview Player */}
             {lecFile && (
-              <p className="text-xs text-slate-400 mt-1">
-                Selected: <span className="font-semibold text-slate-700 dark:text-slate-200">{lecFile.name}</span> ({(lecFile.size / (1024 * 1024)).toFixed(1)} MB)
-              </p>
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 px-1">
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">
+                    {lecFile.name}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0 font-mono text-[11px]">
+                    <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-dark-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-dark-700">
+                      {(lecFile.size / (1024 * 1024)).toFixed(1)} MB
+                    </span>
+                    {lecDuration > 0 && (
+                      <span className="px-2 py-0.5 rounded bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 font-bold">
+                        {Math.floor(lecDuration / 60)}:{(lecDuration % 60).toString().padStart(2, '0')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {lecPreview && (
+                  <div className="relative rounded-xl overflow-hidden aspect-video bg-black border border-slate-700 shadow-xl max-h-72 w-full">
+                    <CustomVideoPlayer
+                      src={lecPreview}
+                      fallbackDuration={lecDuration}
+                      downloadFilename={lecTitle || 'lecturette-video'}
+                      className="w-full h-full"
+                    />
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
@@ -828,7 +995,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
 
           <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-dark-600">
             <span className="text-[11px] text-slate-400">
-              Batch Folder: <strong className="font-mono text-slate-600 dark:text-slate-300">{dateFolder}</strong>
+              Batch Folder: <strong className="font-mono text-slate-600 dark:text-slate-300">{lecDate || dateFolder}</strong>
             </span>
             <button
               type="submit"
@@ -837,6 +1004,213 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
             >
               <Upload className="w-3.5 h-3.5" />
               <span>{lecUploading ? (lecProgress !== null ? `Uploading (${lecProgress}%)...` : 'Saving...') : 'Upload Lecturette Video'}</span>
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* GPE (Group Planning Exercise) Tab */}
+      {tab === 'gpe' && (
+        <form onSubmit={uploadGpe} className="card p-5 space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
+              <label className="label">GPE Exercise Title</label>
+              <input
+                value={gpeTitle}
+                onChange={e => setGpeTitle(e.target.value)}
+                className="input"
+                placeholder="e.g. GPE Set 1 - Forest Patrol or River Rescue"
+              />
+            </div>
+            <div>
+              <label className="label">Map Scale</label>
+              <input
+                value={gpeScale}
+                onChange={e => setGpeScale(e.target.value)}
+                className="input font-mono"
+                placeholder="1 cm = 2 km"
+              />
+            </div>
+          </div>
+
+          {/* Real SSB timing info card */}
+          <div className="rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 p-3 text-xs text-blue-700 dark:text-blue-300 space-y-1">
+            <p className="font-semibold flex items-center gap-1.5">
+              <Compass className="w-4 h-4 text-blue-500" />
+              Real SSB Timing Format: 5 Mins Map Study + 10 Mins Solution Writing
+            </p>
+            <p className="text-[11px] text-blue-600 dark:text-blue-300/80">
+              Upload the high-resolution map model image and paste the GTO problem statement below. During test execution, candidates get exactly 5 minutes to study the map & problem narrative, followed by 10 minutes to write their individual solution plan.
+            </p>
+          </div>
+
+          {/* Map Image Upload */}
+          <div className="space-y-2">
+            <label className="label flex items-center justify-between">
+              <span>GPE Map Image (Required)</span>
+              {gpeMapFile && <span className="text-[11px] text-emerald-500 font-semibold flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Map selected</span>}
+            </label>
+
+            <div
+              onClick={() => gpeFileRef.current?.click()}
+              className="border-2 border-dashed border-slate-200 dark:border-dark-600 hover:border-blue-400 dark:hover:border-blue-500 rounded-xl p-5 text-center cursor-pointer transition-colors bg-slate-50/50 dark:bg-dark-800/30"
+            >
+              <input
+                ref={gpeFileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleGpeMapChange}
+              />
+              <Map className="w-8 h-8 text-blue-400 dark:text-blue-500 mx-auto mb-2 opacity-80" />
+              <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                {gpeMapFile ? gpeMapFile.name : 'Click to select or drag and drop GPE Map Image'}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Supports JPG, PNG, WEBP high-resolution maps
+              </p>
+            </div>
+
+            {/* Map Preview Thumbnail */}
+            {gpeMapPreview && (
+              <div className="relative rounded-xl overflow-hidden border border-slate-200 dark:border-dark-600 max-h-60 bg-black/40 flex items-center justify-center p-2 group">
+                <img
+                  src={gpeMapPreview}
+                  alt="GPE Map Preview"
+                  className="max-h-56 w-auto object-contain rounded"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGpeMapFile(null);
+                    URL.revokeObjectURL(gpeMapPreview);
+                    setGpeMapPreview(null);
+                    if (gpeFileRef.current) gpeFileRef.current.value = '';
+                  }}
+                  className="absolute top-3 right-3 p-1.5 rounded-lg bg-black/70 hover:bg-red-600 text-white transition-colors"
+                  title="Remove map"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Narrative / Problem Statement Section (Upload Image OR Paste Text) */}
+          <div className="space-y-2 border border-slate-200 dark:border-dark-600 rounded-xl p-3.5 bg-slate-50/50 dark:bg-dark-800/30">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <label className="label mb-0">Problem Statement Narrative (Upload Image or Paste Text)</label>
+              <div className="flex items-center bg-slate-200/80 dark:bg-dark-700 p-0.5 rounded-lg text-xs self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setGpeNarrativeTab('text')}
+                  className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                    gpeNarrativeTab === 'text' ? 'bg-blue-600 text-white font-bold' : 'text-slate-500 dark:text-slate-300'
+                  }`}
+                >
+                  Paste Text
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGpeNarrativeTab('image')}
+                  className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                    gpeNarrativeTab === 'image' ? 'bg-blue-600 text-white font-bold' : 'text-slate-500 dark:text-slate-300'
+                  }`}
+                >
+                  Upload Card Image
+                </button>
+              </div>
+            </div>
+
+            {/* Narrative Image Upload */}
+            {gpeNarrativeTab === 'image' ? (
+              <div className="space-y-2 pt-1">
+                <div
+                  onClick={() => gpeNarrativeFileRef.current?.click()}
+                  className="border-2 border-dashed border-slate-300 dark:border-dark-600 hover:border-blue-400 dark:hover:border-blue-500 rounded-xl p-4 text-center cursor-pointer transition-colors bg-white dark:bg-dark-900"
+                >
+                  <input
+                    ref={gpeNarrativeFileRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleGpeNarrativeChange}
+                  />
+                  <ImageIcon className="w-6 h-6 text-blue-400 mx-auto mb-1 opacity-80" />
+                  <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                    {gpeNarrativeFile ? gpeNarrativeFile.name : 'Click to upload scanned/photo narrative card'}
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">JPG, PNG, WEBP narrative cards</p>
+                </div>
+
+                {gpeNarrativePreview && (
+                  <div className="relative rounded-xl overflow-hidden border border-slate-200 dark:border-dark-600 max-h-56 bg-black/40 flex items-center justify-center p-2 group">
+                    <img
+                      src={gpeNarrativePreview}
+                      alt="Narrative Card Preview"
+                      className="max-h-52 w-auto object-contain rounded"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGpeNarrativeFile(null);
+                        URL.revokeObjectURL(gpeNarrativePreview);
+                        setGpeNarrativePreview(null);
+                        if (gpeNarrativeFileRef.current) gpeNarrativeFileRef.current.value = '';
+                      }}
+                      className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/70 hover:bg-red-600 text-white transition-colors"
+                      title="Remove narrative card image"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Paste Narrative Text Directly */
+              <div className="space-y-1 pt-1">
+                <textarea
+                  rows={6}
+                  value={gpeDescription}
+                  onChange={e => setGpeDescription(e.target.value)}
+                  className="input font-sans text-xs leading-relaxed resize-y scrollbar-thin bg-white dark:bg-dark-900"
+                  placeholder="Paste or type the full GTO narrative here...&#10;&#10;e.g. You are a group of 8 college students returning from an excursion in a jeep. At 1400 hrs, near Milestone 15, you witness a truck overturn injuring two passengers... Meanwhile, a railway gang-man informs you of a broken rail track on which the Express Train will pass at 1530 hrs...&#10;&#10;Resources Available: Your Jeep, local bus route, telephone booth at Shampur, village dispensary 4 km away."
+                />
+                <div className="flex justify-between text-[11px] text-slate-400 pt-0.5">
+                  <span>Direct text entry</span>
+                  <span>{gpeDescription.trim().length} characters</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Optional Model Solution */}
+          <div className="space-y-1.5">
+            <label className="label flex items-center justify-between">
+              <span>Model Solution / GTO Key Points (Optional)</span>
+              <span className="text-[11px] text-slate-400 font-normal">Can be revealed after candidate finishes</span>
+            </label>
+            <textarea
+              rows={3}
+              value={gpeModelSolution}
+              onChange={e => setGpeModelSolution(e.target.value)}
+              className="input font-mono text-xs leading-relaxed resize-y scrollbar-thin"
+              placeholder="Optional: Recommended priority order, sub-group tasks, time-distance calculations for review..."
+            />
+          </div>
+
+          {/* Action Row */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-dark-600">
+            <span className="text-[11px] text-slate-400">
+              Target Batch: <strong className="font-mono text-slate-600 dark:text-slate-300">{dateFolder}</strong>
+            </span>
+            <button
+              type="submit"
+              disabled={gpeUploading || !gpeMapFile || (!gpeDescription.trim() && !gpeNarrativeFile)}
+              className="bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-md px-5 py-2 text-xs flex items-center justify-center gap-2 disabled:opacity-40 transition-colors shadow-sm w-full sm:w-auto"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{gpeUploading ? 'Uploading GPE...' : 'Upload GPE Exercise'}</span>
             </button>
           </div>
         </form>

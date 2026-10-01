@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  Mic, Square, Play, Pause, RotateCcw, Save, Check, Copy, Download,
-  Trash2, FileText, Clock, Volume2, Cloud, AlertCircle, RefreshCw,
+  Mic, Square, Play, Pause, Save, Check, Copy, Download,
+  Trash2, FileText, Clock, Volume2, AlertCircle, RefreshCw,
   Bold, Italic, Underline, Strikethrough, List, ListOrdered,
-  Heading1, Heading2, Quote, Undo, Redo, Sparkles, User, ShieldCheck
+  Heading1, Heading2, Quote, Undo, Redo, User,
+  Edit3, Plus, ChevronDown, ChevronUp, Tag
 } from 'lucide-react';
 import { apiUrl } from '../utils/api';
 
@@ -14,7 +15,7 @@ function formatDuration(secs) {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function NotesEditor({ dateFolder, initialNotes, initialReviews = [], onSaveSuccess }) {
+export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards = [], initialReviews = [], onSaveSuccess }) {
   // Reviewer / Candidate identity state (persisted across sessions)
   const [reviewerName, setReviewerName] = useState(() => {
     try {
@@ -38,11 +39,47 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
   const editorRef = useRef(null);
   const [content, setContent] = useState('');
   const [plainText, setPlainText] = useState('');
+  const [noteTitle, setNoteTitle] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [expandedCards, setExpandedCards] = useState({});
+  const [copiedCardId, setCopiedCardId] = useState(null);
+  const [noteSaveSuccessToast, setNoteSaveSuccessToast] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [notesSaveStatus, setNotesSaveStatus] = useState('idle'); // 'idle' | 'saving' | 'saved'
   const [lastSavedTime, setLastSavedTime] = useState(null);
   const [notesError, setNotesError] = useState(null);
   const [copiedToast, setCopiedToast] = useState(false);
+
+  // Custom confirmation modal state (replaces window.confirm / alert)
+  const [confirmModal, setConfirmModal] = useState(null);
+  // { message: string, subtext?: string, onConfirm: fn, confirmLabel?: string, confirmColor?: string }
+
+  // Inline delete success popup (replaces alert for successes)
+  const [deleteSuccessToast, setDeleteSuccessToast] = useState(null); // string message
+
+  const showDeleteSuccessToast = (msg) => {
+    setDeleteSuccessToast(msg);
+    setTimeout(() => setDeleteSuccessToast(null), 3000);
+  };
+
+  // Note Cards state (list of saved note cards)
+  const [noteCards, setNoteCards] = useState(() => {
+    if (Array.isArray(initialNoteCards) && initialNoteCards.length > 0) {
+      return initialNoteCards;
+    }
+    if (initialNotes?.content && initialNotes.content.trim() && initialNotes.content !== '<p><br></p>') {
+      return [{
+        id: 'note-initial',
+        title: 'Initial Practice Note',
+        content: initialNotes.content,
+        plainText: initialNotes.plainText || '',
+        author: initialNotes.author || '',
+        createdAt: initialNotes.updatedAt || new Date().toISOString(),
+        updatedAt: initialNotes.updatedAt || new Date().toISOString()
+      }];
+    }
+    return [];
+  });
 
   // Audio Review Recording states
   const mediaRecorderRef = useRef(null);
@@ -70,7 +107,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
   const [activeAudioDuration, setActiveAudioDuration] = useState(0);
   const [isFetchingFresh, setIsFetchingFresh] = useState(false);
 
-  // Active sync function to pull latest reviews & notes from MongoDB
+  // Active sync function to pull latest reviews & noteCards from MongoDB
   const fetchLatestData = useCallback(async (silent = false) => {
     if (!dateFolder) return;
     if (!silent) setIsFetchingFresh(true);
@@ -84,11 +121,18 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
           if (Array.isArray(folderData.reviews)) {
             setReviews(folderData.reviews);
           }
-          if (folderData.notes?.content && !isSavingNotes) {
-            setContent(folderData.notes.content);
-            if (editorRef.current && (!editorRef.current.innerHTML || editorRef.current.innerHTML === '<p><br></p>')) {
-              editorRef.current.innerHTML = folderData.notes.content;
-            }
+          if (Array.isArray(folderData.noteCards)) {
+            setNoteCards(folderData.noteCards);
+          } else if (folderData.notes?.content && noteCards.length === 0) {
+            setNoteCards([{
+              id: 'note-initial',
+              title: 'Initial Practice Note',
+              content: folderData.notes.content,
+              plainText: folderData.notes.plainText || '',
+              author: folderData.notes.author || '',
+              createdAt: folderData.notes.updatedAt || new Date().toISOString(),
+              updatedAt: folderData.notes.updatedAt || new Date().toISOString()
+            }]);
           }
           if (folderData.notes?.updatedAt) {
             setLastSavedTime(new Date(folderData.notes.updatedAt));
@@ -100,13 +144,18 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       if (Array.isArray(data.reviews)) {
         setReviews(data.reviews);
       }
-      if (data.notes?.content && !isSavingNotes) {
-        if (!editorRef.current || !editorRef.current.innerHTML || editorRef.current.innerHTML === '<p><br></p>') {
-          setContent(data.notes.content);
-          if (editorRef.current) {
-            editorRef.current.innerHTML = data.notes.content;
-          }
-        }
+      if (Array.isArray(data.noteCards)) {
+        setNoteCards(data.noteCards);
+      } else if (data.notes?.content && noteCards.length === 0) {
+        setNoteCards([{
+          id: 'note-initial',
+          title: 'Initial Practice Note',
+          content: data.notes.content,
+          plainText: data.notes.plainText || '',
+          author: data.notes.author || '',
+          createdAt: data.notes.updatedAt || new Date().toISOString(),
+          updatedAt: data.notes.updatedAt || new Date().toISOString()
+        }]);
       }
       if (data.notes?.updatedAt) {
         setLastSavedTime(new Date(data.notes.updatedAt));
@@ -116,22 +165,41 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
     } finally {
       if (!silent) setIsFetchingFresh(false);
     }
-  }, [dateFolder, isSavingNotes]);
+  }, [dateFolder, noteCards.length]);
 
   // Synchronize on mount and when dateFolder changes
   useEffect(() => {
-    const initialHtml = initialNotes?.content || '';
-    setContent(initialHtml);
-    if (editorRef.current && editorRef.current.innerHTML !== initialHtml) {
-      editorRef.current.innerHTML = initialHtml;
+    if (Array.isArray(initialNoteCards) && initialNoteCards.length > 0) {
+      setNoteCards(initialNoteCards);
+    } else if (initialNotes?.content && initialNotes.content.trim() && initialNotes.content !== '<p><br></p>') {
+      setNoteCards([{
+        id: 'note-initial',
+        title: 'Initial Practice Note',
+        content: initialNotes.content,
+        plainText: initialNotes.plainText || '',
+        author: initialNotes.author || '',
+        createdAt: initialNotes.updatedAt || new Date().toISOString(),
+        updatedAt: initialNotes.updatedAt || new Date().toISOString()
+      }]);
+    } else {
+      setNoteCards([]);
     }
+
+    setEditingNoteId(null);
+    setNoteTitle('');
+    setContent('');
+    setPlainText('');
+    if (editorRef.current) {
+      editorRef.current.innerHTML = '';
+    }
+
     if (initialNotes?.updatedAt) {
       setLastSavedTime(new Date(initialNotes.updatedAt));
     }
     setReviews(initialReviews || []);
     // Fetch latest fresh data immediately from database
     fetchLatestData(true);
-  }, [dateFolder, initialNotes, initialReviews, fetchLatestData]);
+  }, [dateFolder, initialNotes, initialNoteCards, initialReviews, fetchLatestData]);
 
   // Background auto-sync interval every 12 seconds so distant mentor/candidate reviews appear automatically
   useEffect(() => {
@@ -373,27 +441,36 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
   };
 
   // Delete saved audio review
-  const handleDeleteReview = async (reviewId) => {
-    if (!window.confirm('Delete this audio review?')) return;
-    try {
-      const res = await fetch(
-        apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/reviews/${encodeURIComponent(reviewId)}`),
-        { method: 'DELETE' }
-      );
-      if (!res.ok) throw new Error('Failed to delete review');
-
-      setReviews((prev) => prev.filter((r) => r.id !== reviewId));
-      if (playingReviewId === reviewId) {
-        if (activeAudioElement) activeAudioElement.pause();
-        setPlayingReviewId(null);
+  const handleDeleteReview = (reviewId) => {
+    const rev = reviews.find(r => r.id === reviewId);
+    setConfirmModal({
+      message: 'Delete this voice note?',
+      subtext: rev?.title ? `"${rev.title}" will be permanently removed.` : 'This voice note will be permanently removed.',
+      confirmLabel: 'Delete Voice Note',
+      confirmColor: 'red',
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const res = await fetch(
+            apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/reviews/${encodeURIComponent(reviewId)}`),
+            { method: 'DELETE' }
+          );
+          if (!res.ok) throw new Error('Failed to delete review');
+          setReviews((prev) => prev.filter((r) => r.id !== reviewId));
+          if (playingReviewId === reviewId) {
+            if (activeAudioElement) activeAudioElement.pause();
+            setPlayingReviewId(null);
+          }
+          if (onSaveSuccess) {
+            onSaveSuccess({ reviews: reviews.filter((r) => r.id !== reviewId) });
+          }
+          fetchLatestData(true);
+          showDeleteSuccessToast('Voice note deleted successfully.');
+        } catch (err) {
+          showDeleteSuccessToast(`Error: ${err.message}`);
+        }
       }
-      if (onSaveSuccess) {
-        onSaveSuccess({ reviews: reviews.filter((r) => r.id !== reviewId) });
-      }
-      fetchLatestData(true);
-    } catch (err) {
-      alert(`Delete error: ${err.message}`);
-    }
+    });
   };
 
   // Play / Pause saved review
@@ -436,7 +513,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
     });
   };
 
-  // ── SAVE WRITTEN NOTES ──────────────────────────────────────────────────────
+  // ── SAVE WRITTEN NOTES AS CARDS ──────────────────────────────────────────
   const handleSaveNotes = async () => {
     if (!editorRef.current) return;
     const trimmedReviewer = reviewerName.trim();
@@ -447,33 +524,87 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       return;
     }
 
-    const htmlToSave = editorRef.current.innerHTML;
-    const textToSave = editorRef.current.innerText || '';
+    const htmlToSave = editorRef.current.innerHTML || '';
+    const textToSave = (editorRef.current.innerText || '').trim();
+
+    if (!textToSave && (!htmlToSave || htmlToSave === '<p><br></p>')) {
+      setNotesError('Note content cannot be empty. Please type your notes before saving.');
+      editorRef.current.focus();
+      return;
+    }
 
     setIsSavingNotes(true);
     setNotesSaveStatus('saving');
     setNotesError(null);
 
     try {
-      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/notes`), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content: htmlToSave,
-          plainText: textToSave,
-          author: trimmedReviewer
-        })
-      });
+      let savedCard = null;
+      let updatedCards = [];
+      let savedNotesObj = null;
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save notes');
+      if (editingNoteId) {
+        // Update existing note card
+        const res = await fetch(
+          apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/notes/${encodeURIComponent(editingNoteId)}`),
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: noteTitle.trim(),
+              content: htmlToSave,
+              plainText: textToSave,
+              author: trimmedReviewer
+            })
+          }
+        );
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to update note card');
+
+        savedCard = data.noteCard;
+        updatedCards = data.noteCards || noteCards.map(c => (c.id === editingNoteId ? savedCard : c));
+        savedNotesObj = data.notes;
+        setNoteCards(updatedCards);
+        setEditingNoteId(null);
+      } else {
+        // Create brand new note card (User can add as many note cards as they want!)
+        const defaultTitle = `Note #${noteCards.length + 1}`;
+        const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/notes`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: noteTitle.trim() || defaultTitle,
+            content: htmlToSave,
+            plainText: textToSave,
+            author: trimmedReviewer
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to save note card');
+
+        savedCard = data.noteCard;
+        updatedCards = data.noteCards || [savedCard, ...noteCards];
+        savedNotesObj = data.notes;
+        setNoteCards(updatedCards);
+      }
+
+      // Clear the editor so user can immediately write another note card!
+      if (editorRef.current) {
+        editorRef.current.innerHTML = '';
+      }
+      setContent('');
+      setPlainText('');
+      setNoteTitle('');
 
       setNotesSaveStatus('saved');
       setLastSavedTime(new Date());
-      setTimeout(() => setNotesSaveStatus('idle'), 2500);
+      setNoteSaveSuccessToast(true);
+      setTimeout(() => {
+        setNotesSaveStatus('idle');
+        setNoteSaveSuccessToast(false);
+      }, 3000);
 
       if (onSaveSuccess) {
-        onSaveSuccess({ notes: data.notes });
+        onSaveSuccess({ notes: savedNotesObj, noteCards: updatedCards });
       }
       fetchLatestData(true);
     } catch (err) {
@@ -482,6 +613,110 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       setNotesError(err.message);
     } finally {
       setIsSavingNotes(false);
+    }
+  };
+
+  const handleEditCard = (card) => {
+    setEditingNoteId(card.id);
+    setNoteTitle(card.title || '');
+    setContent(card.content || '');
+    setPlainText(card.plainText || '');
+    if (editorRef.current) {
+      editorRef.current.innerHTML = card.content || '';
+    }
+    const container = document.getElementById('written-notes-editor-container');
+    if (container) {
+      container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    editorRef.current?.focus();
+  };
+
+  const handleCancelEdit = () => {
+    setEditingNoteId(null);
+    setNoteTitle('');
+    setContent('');
+    setPlainText('');
+    if (editorRef.current) {
+      editorRef.current.innerHTML = '';
+    }
+  };
+
+  const handleDeleteCard = (cardId) => {
+    const card = noteCards.find(c => c.id === cardId);
+    setConfirmModal({
+      message: 'Delete this note card?',
+      subtext: card?.title ? `"${card.title}" will be permanently removed.` : 'This note card will be permanently removed.',
+      confirmLabel: 'Delete Note Card',
+      confirmColor: 'red',
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const res = await fetch(
+            apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/notes/${encodeURIComponent(cardId)}`),
+            { method: 'DELETE' }
+          );
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || 'Failed to delete note card');
+          }
+          const data = await res.json().catch(() => ({}));
+          const remainingCards = noteCards.filter((c) => c.id !== cardId);
+          setNoteCards(remainingCards);
+          if (editingNoteId === cardId) handleCancelEdit();
+          if (onSaveSuccess) {
+            onSaveSuccess({ noteCards: data.noteCards || remainingCards, notes: data.notes });
+          }
+          fetchLatestData(true);
+          showDeleteSuccessToast('Note card deleted successfully.');
+        } catch (err) {
+          showDeleteSuccessToast(`Error: ${err.message}`);
+        }
+      }
+    });
+  };
+
+  const handleCopyCard = (card) => {
+    const text = card.plainText || '';
+    if (!text.trim()) return;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedCardId(card.id);
+      setTimeout(() => setCopiedCardId(null), 2000);
+    });
+  };
+
+  const handleDownloadCard = (card) => {
+    const filename = `${(card.title || 'note').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${dateFolder}.txt`;
+    const header = `Title: ${card.title || 'Note'}\nAuthor: ${card.author || 'Reviewer'}\nDate: ${new Date(card.createdAt || card.updatedAt || Date.now()).toLocaleString()}\nFolder: ${dateFolder}\n${'='.repeat(40)}\n\n`;
+    const text = header + (card.plainText || '');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const toggleCardExpanded = (cardId) => {
+    setExpandedCards((prev) => ({
+      ...prev,
+      [cardId]: !prev[cardId]
+    }));
+  };
+
+  const formatCardDate = (dateVal) => {
+    if (!dateVal) return '';
+    try {
+      const d = new Date(dateVal);
+      return (
+        d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) +
+        ' · ' +
+        d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      );
+    } catch {
+      return '';
     }
   };
 
@@ -495,7 +730,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
   };
 
   const handleDownloadNotes = () => {
-    const filename = `notes-${dateFolder}.txt`;
+    const filename = `${(noteTitle.trim() || 'notes').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${dateFolder}.txt`;
     const text = editorRef.current?.innerText || '';
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -509,12 +744,21 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
   };
 
   const handleClearNotes = () => {
-    if (window.confirm('Clear all written notes for this date?')) {
-      if (editorRef.current) {
-        editorRef.current.innerHTML = '';
-        updateStats();
+    setConfirmModal({
+      message: 'Clear the note editor?',
+      subtext: 'Unsaved content in the editor will be lost. Saved note cards are not affected.',
+      confirmLabel: 'Clear Editor',
+      confirmColor: 'amber',
+      onConfirm: () => {
+        setConfirmModal(null);
+        if (editorRef.current) {
+          editorRef.current.innerHTML = '';
+          updateStats();
+        }
+        setNoteTitle('');
+        if (editingNoteId) setEditingNoteId(null);
       }
-    }
+    });
   };
 
   const wordsCount = plainText.trim() ? plainText.trim().split(/\s+/).length : 0;
@@ -522,6 +766,63 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
 
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-5 animate-fadeIn w-full overflow-hidden">
+
+      {/* ── CUSTOM CONFIRMATION MODAL ───────────────────────────────────────── */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-dark-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-dark-700 w-full max-w-sm p-6 space-y-4 animate-fadeIn">
+            <div className="flex items-start gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                confirmModal.confirmColor === 'red'
+                  ? 'bg-red-100 dark:bg-red-950/50 text-red-500'
+                  : 'bg-amber-100 dark:bg-amber-950/50 text-amber-500'
+              }`}>
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">{confirmModal.message}</h3>
+                {confirmModal.subtext && (
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">{confirmModal.subtext}</p>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-dark-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-dark-600 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmModal.onConfirm}
+                className={`px-4 py-2 rounded-lg text-xs font-bold text-white transition-colors shadow ${
+                  confirmModal.confirmColor === 'red'
+                    ? 'bg-red-600 hover:bg-red-500'
+                    : 'bg-amber-600 hover:bg-amber-500'
+                }`}
+              >
+                {confirmModal.confirmLabel || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DELETE SUCCESS TOAST (floating, top-center) ─────────────────────── */}
+      {deleteSuccessToast && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[9998] animate-fadeIn">
+          <div className={`flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-2xl border text-xs font-semibold ${
+            deleteSuccessToast.startsWith('Error')
+              ? 'bg-red-600 border-red-500 text-white'
+              : 'bg-emerald-600 border-emerald-500 text-white'
+          }`}>
+            <Check className="w-4 h-4 shrink-0" />
+            <span>{deleteSuccessToast}</span>
+          </div>
+        </div>
+      )}
 
       {/* ──────────────────────────────────────────────────────────────────────── */}
       {/* COMPULSORY REVIEWER IDENTITY BAR (Remembered across sessions)           */}
@@ -916,247 +1217,479 @@ export default function NotesEditor({ dateFolder, initialNotes, initialReviews =
       </div>
 
       {/* ──────────────────────────────────────────────────────────────────────── */}
-      {/* SECTION 2: WRITTEN PRACTICE NOTES (Rich Text Editor)                     */}
+      {/* SECTION 2: WRITTEN PRACTICE NOTES (Cards & Rich Text Editor)             */}
       {/* ──────────────────────────────────────────────────────────────────────── */}
-      <div className="border border-slate-200 dark:border-dark-600 rounded-2xl overflow-hidden bg-white dark:bg-dark-900 shadow-sm flex flex-col">
-        {/* Section Header */}
-        <div className="px-4 py-3 bg-slate-50 dark:bg-dark-800 border-b border-slate-200 dark:border-dark-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4 text-indigo-500 shrink-0" />
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h4 className="text-sm font-bold text-slate-800 dark:text-white">
-                  Written Practice Notes
-                </h4>
-                {initialNotes?.author && (
-                  <span className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 flex items-center gap-1">
-                    <User className="w-2.5 h-2.5" /> {initialNotes.author}
+      <div id="written-notes-editor-container" className="space-y-4">
+        {/* Editor Box */}
+        <div className={`border rounded-2xl overflow-hidden bg-white dark:bg-dark-900 shadow-sm flex flex-col transition-all ${
+          editingNoteId
+            ? 'border-amber-500/60 ring-2 ring-amber-500/20 shadow-md'
+            : 'border-slate-200 dark:border-dark-600'
+        }`}>
+          {/* Section Header */}
+          <div className="px-4 py-3 bg-slate-50 dark:bg-dark-800 border-b border-slate-200 dark:border-dark-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-indigo-500 shrink-0" />
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="text-sm font-bold text-slate-800 dark:text-white">
+                    {editingNoteId ? 'Edit Note Card' : 'Written Practice Notes'}
+                  </h4>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-bold border border-indigo-500/20">
+                    {noteCards.length} {noteCards.length === 1 ? 'Note Card' : 'Note Cards'}
+                  </span>
+                  {editingNoteId && (
+                    <span className="text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full flex items-center gap-1 animate-pulse">
+                      <Edit3 className="w-2.5 h-2.5" /> Editing Card
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-center">
+              {editingNoteId && (
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="btn-secondary px-3 py-1.5 text-xs font-semibold"
+                >
+                  Cancel Edit
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleSaveNotes}
+                disabled={isSavingNotes}
+                className={`flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm ${
+                  notesSaveStatus === 'saved'
+                    ? 'bg-emerald-600 text-white'
+                    : editingNoteId
+                      ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                }`}
+              >
+                {isSavingNotes ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>{editingNoteId ? 'Updating...' : 'Saving Card...'}</span>
+                  </>
+                ) : notesSaveStatus === 'saved' ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{editingNoteId ? 'Card Updated!' : 'Card Saved!'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{editingNoteId ? 'Update Note Card' : 'Save Notes'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Success notice */}
+          {noteSaveSuccessToast && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border-b border-emerald-200 dark:border-emerald-900/40 text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-2 animate-fadeIn">
+              <Check className="w-4 h-4 shrink-0" />
+              <span>{editingNoteId ? 'Note card updated successfully!' : 'Note card saved successfully! You can add as many note cards as you want.'}</span>
+            </div>
+          )}
+
+          {/* Error Notice */}
+          {notesError && (
+            <div className="p-3 bg-red-50 dark:bg-red-950/30 border-b border-red-200 dark:border-red-900/40 text-xs text-red-600 dark:text-red-400 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{notesError}</span>
+              </div>
+              <button onClick={() => setNotesError(null)} className="font-bold px-1 hover:opacity-80">
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Note Title Input Row */}
+          <div className="px-3 py-2 bg-slate-50/50 dark:bg-dark-800/40 border-b border-slate-200/80 dark:border-dark-700 flex items-center gap-2">
+            <span className="text-xs text-slate-400 font-semibold shrink-0 flex items-center gap-1">
+              <Tag className="w-3.5 h-3.5 text-indigo-500" />
+              <span className="hidden xs:inline">Title:</span>
+            </span>
+            <input
+              type="text"
+              value={noteTitle}
+              onChange={(e) => setNoteTitle(e.target.value)}
+              placeholder={`Note Title (optional, e.g. TAT Story #2 Analysis, Psych Debrief - defaults to Note #${noteCards.length + 1})`}
+              className="input py-1 px-2.5 text-xs w-full bg-white dark:bg-dark-900 border-slate-200 dark:border-dark-700"
+            />
+          </div>
+
+          {/* Formatting Toolbar - Highly Responsive */}
+          <div className="p-1.5 sm:p-2 bg-slate-100/60 dark:bg-dark-800/60 border-b border-slate-200 dark:border-dark-700 flex flex-wrap items-center gap-1 text-slate-700 dark:text-slate-300">
+            {/* Headings */}
+            <button
+              type="button"
+              onClick={() => executeCommand('formatBlock', '<h2>')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Heading 1"
+            >
+              <Heading1 className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => executeCommand('formatBlock', '<h3>')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Heading 2"
+            >
+              <Heading2 className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => executeCommand('formatBlock', '<p>')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors text-xs font-bold"
+              title="Paragraph"
+            >
+              P
+            </button>
+
+            <span className="w-px h-4 bg-slate-300 dark:bg-dark-600 mx-1 hidden xs:block" />
+
+            {/* Inline styles */}
+            <button
+              type="button"
+              onClick={() => executeCommand('bold')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors font-bold"
+              title="Bold"
+            >
+              <Bold className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => executeCommand('italic')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Italic"
+            >
+              <Italic className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => executeCommand('underline')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Underline"
+            >
+              <Underline className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => executeCommand('strikeThrough')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Strikethrough"
+            >
+              <Strikethrough className="w-4 h-4" />
+            </button>
+
+            <span className="w-px h-4 bg-slate-300 dark:bg-dark-600 mx-1 hidden xs:block" />
+
+            {/* Lists */}
+            <button
+              type="button"
+              onClick={() => executeCommand('insertUnorderedList')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Bullet List"
+            >
+              <List className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => executeCommand('insertOrderedList')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Numbered List"
+            >
+              <ListOrdered className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => executeCommand('formatBlock', '<blockquote>')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Quote"
+            >
+              <Quote className="w-4 h-4" />
+            </button>
+
+            <span className="w-px h-4 bg-slate-300 dark:bg-dark-600 mx-1 hidden xs:block" />
+
+            {/* History */}
+            <button
+              type="button"
+              onClick={() => executeCommand('undo')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Undo"
+            >
+              <Undo className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => executeCommand('redo')}
+              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+              title="Redo"
+            >
+              <Redo className="w-4 h-4" />
+            </button>
+
+            {/* Quick Actions */}
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                onClick={handleCopyNotes}
+                className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors relative"
+                title="Copy current note to clipboard"
+              >
+                <Copy className="w-4 h-4" />
+                {copiedToast && (
+                  <span className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] px-2 py-0.5 rounded shadow">
+                    Copied!
                   </span>
                 )}
-              </div>
-              {/* <p className="text-[11px] text-slate-400">
-                Detailed notes, story summaries, and psychologist observations
-              </p> */}
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadNotes}
+                className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors"
+                title="Export current note as .txt file"
+              >
+                <Download className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleClearNotes}
+                className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-400 hover:text-red-500 transition-colors"
+                title="Clear current note editor"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={handleSaveNotes}
-            disabled={isSavingNotes}
-            className={`flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm ${notesSaveStatus === 'saved'
-                ? 'bg-emerald-600 text-white'
-                : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-              }`}
-          >
-            {isSavingNotes ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>Saving...</span>
-              </>
-            ) : notesSaveStatus === 'saved' ? (
-              <>
-                <Check className="w-3.5 h-3.5" />
-                <span>Saved!</span>
-              </>
-            ) : (
-              <>
-                <Save className="w-3.5 h-3.5" />
-                <span>Save Notes</span>
-              </>
-            )}
-          </button>
-        </div>
+          {/* Contenteditable Rich Text Area */}
+          <div
+            ref={editorRef}
+            contentEditable
+            onInput={updateStats}
+            onBlur={updateStats}
+            className="p-4 min-h-[200px] max-h-[450px] overflow-y-auto focus:outline-none text-sm text-slate-800 dark:text-slate-100 leading-relaxed font-sans empty:before:content-[attr(data-placeholder)] empty:before:text-slate-400"
+            data-placeholder="Start typing your daily practice review, observations, psychologist tips, or character notes here..."
+          />
 
-        {/* Error Notice */}
-        {notesError && (
-          <div className="p-3 bg-red-50 dark:bg-red-950/30 border-b border-red-200 dark:border-red-900/40 text-xs text-red-600 dark:text-red-400 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{notesError}</span>
+          {/* Editor Bottom Stats Bar */}
+          <div className="px-4 py-2 bg-slate-50 dark:bg-dark-800/60 border-t border-slate-200 dark:border-dark-700 flex flex-wrap items-center justify-between text-[11px] text-slate-400 gap-2">
+            <div className="flex items-center gap-3">
+              <span>{wordsCount} words</span>
+              <span>·</span>
+              <span>{charsCount} characters</span>
             </div>
-            <button onClick={() => setNotesError(null)} className="font-bold px-1 hover:opacity-80">
-              ✕
-            </button>
-          </div>
-        )}
 
-        {/* Formatting Toolbar - Highly Responsive */}
-        <div className="p-1.5 sm:p-2 bg-slate-100/60 dark:bg-dark-800/60 border-b border-slate-200 dark:border-dark-700 flex flex-wrap items-center gap-1 text-slate-700 dark:text-slate-300">
-          {/* Headings */}
-          <button
-            type="button"
-            onClick={() => executeCommand('formatBlock', '<h2>')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Heading 1"
-          >
-            <Heading1 className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => executeCommand('formatBlock', '<h3>')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Heading 2"
-          >
-            <Heading2 className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => executeCommand('formatBlock', '<p>')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors text-xs font-bold"
-            title="Paragraph"
-          >
-            P
-          </button>
-
-          <span className="w-px h-4 bg-slate-300 dark:bg-dark-600 mx-1 hidden xs:block" />
-
-          {/* Inline styles */}
-          <button
-            type="button"
-            onClick={() => executeCommand('bold')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors font-bold"
-            title="Bold"
-          >
-            <Bold className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => executeCommand('italic')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Italic"
-          >
-            <Italic className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => executeCommand('underline')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Underline"
-          >
-            <Underline className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => executeCommand('strikeThrough')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Strikethrough"
-          >
-            <Strikethrough className="w-4 h-4" />
-          </button>
-
-          <span className="w-px h-4 bg-slate-300 dark:bg-dark-600 mx-1 hidden xs:block" />
-
-          {/* Lists */}
-          <button
-            type="button"
-            onClick={() => executeCommand('insertUnorderedList')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Bullet List"
-          >
-            <List className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => executeCommand('insertOrderedList')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Numbered List"
-          >
-            <ListOrdered className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => executeCommand('formatBlock', '<blockquote>')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Quote"
-          >
-            <Quote className="w-4 h-4" />
-          </button>
-
-          <span className="w-px h-4 bg-slate-300 dark:bg-dark-600 mx-1 hidden xs:block" />
-
-          {/* History */}
-          <button
-            type="button"
-            onClick={() => executeCommand('undo')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Undo"
-          >
-            <Undo className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => executeCommand('redo')}
-            className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            title="Redo"
-          >
-            <Redo className="w-4 h-4" />
-          </button>
-
-          {/* Quick Actions */}
-          <div className="ml-auto flex items-center gap-1">
-            <button
-              type="button"
-              onClick={handleCopyNotes}
-              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors relative"
-              title="Copy notes to clipboard"
-            >
-              <Copy className="w-4 h-4" />
-              {copiedToast && (
-                <span className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] px-2 py-0.5 rounded shadow">
-                  Copied!
+            <div className="flex items-center gap-2">
+              {reviewerName.trim() && (
+                <span className="text-indigo-600 dark:text-indigo-400 font-medium">
+                  Author: {reviewerName.trim()}
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadNotes}
-              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-dark-700 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors"
-              title="Export as .txt file"
-            >
-              <Download className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={handleClearNotes}
-              className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-400 hover:text-red-500 transition-colors"
-              title="Clear notes"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+              {lastSavedTime && (
+                <span>
+                  · Last saved: {lastSavedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Contenteditable Rich Text Area */}
-        <div
-          ref={editorRef}
-          contentEditable
-          onInput={updateStats}
-          onBlur={updateStats}
-          className="p-4 min-h-[220px] max-h-[500px] overflow-y-auto focus:outline-none text-sm text-slate-800 dark:text-slate-100 leading-relaxed font-sans empty:before:content-[attr(data-placeholder)] empty:before:text-slate-400"
-          data-placeholder="Start typing your daily practice review, observations, psychologist tips, or character notes here..."
-        />
+        {/* SAVED NOTE CARDS LIST (User can add as many note cards as they want!) */}
+        <div className="space-y-3 pt-2">
+          <div className="flex items-center justify-between pt-1 pb-1">
+            <div className="flex items-center gap-2">
+              <h4 className="text-xs font-bold text-slate-800 dark:text-white uppercase tracking-wider font-mono flex items-center gap-1.5">
+                <FileText className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Saved Note Cards ({noteCards.length})</span>
+              </h4>
+              <span className="text-[10px] text-slate-400">· Independent cards</span>
+            </div>
 
-        {/* Editor Bottom Stats Bar */}
-        <div className="px-4 py-2 bg-slate-50 dark:bg-dark-800/60 border-t border-slate-200 dark:border-dark-700 flex flex-wrap items-center justify-between text-[11px] text-slate-400 gap-2">
-          <div className="flex items-center gap-3">
-            <span>{wordsCount} words</span>
-            <span>·</span>
-            <span>{charsCount} characters</span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {reviewerName.trim() && (
-              <span className="text-indigo-600 dark:text-indigo-400 font-medium">
-                Author: {reviewerName.trim()}
-              </span>
-            )}
-            {lastSavedTime && (
-              <span>
-                · Last saved: {lastSavedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
+            {noteCards.length > 0 && !editingNoteId && (
+              <button
+                type="button"
+                onClick={() => {
+                  const container = document.getElementById('written-notes-editor-container');
+                  if (container) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  editorRef.current?.focus();
+                }}
+                className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 text-xs font-bold flex items-center gap-1 transition-all"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Write New Note</span>
+              </button>
             )}
           </div>
+
+          {noteCards.length === 0 ? (
+            /* Zero Note Cards Default State */
+            <div className="p-6 text-center rounded-xl bg-white/50 dark:bg-dark-900/40 border border-dashed border-slate-200 dark:border-dark-700 space-y-1.5">
+              <FileText className="w-7 h-7 text-slate-300 dark:text-slate-600 mx-auto" />
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                0 Note Cards saved for this date
+              </p>
+              <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+                Write your practice notes, observations, or psychologist feedback above and click "Save Notes". Each note will be saved as an independent card, and you can add as many note cards as you want!
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {noteCards.map((card, idx) => {
+                const isEditingThisCard = editingNoteId === card.id;
+                const isExpanded = Boolean(expandedCards[card.id]);
+                const cardWords = (card.plainText || '').trim() ? (card.plainText || '').trim().split(/\s+/).length : 0;
+                const isLong = (card.plainText || '').length > 220;
+                const isCurrentUser = reviewerName.trim() && (card.author || '').trim().toLowerCase() === reviewerName.trim().toLowerCase();
+
+                return (
+                  <div
+                    key={card.id || idx}
+                    className={`rounded-xl bg-white dark:bg-dark-800 border shadow-sm p-4 flex flex-col justify-between space-y-3 transition-all hover:shadow-md ${
+                      isEditingThisCard
+                        ? 'border-amber-500 ring-2 ring-amber-500/30 bg-amber-50/10 dark:bg-amber-950/10'
+                        : 'border-slate-200 dark:border-dark-700 hover:border-indigo-500/40'
+                    }`}
+                  >
+                    {/* Card Header */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h5 className="text-xs font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
+                            <span className="w-5 h-5 rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-bold flex items-center justify-center text-[10px] shrink-0 font-mono">
+                              #{noteCards.length - idx}
+                            </span>
+                            <span className="truncate">{card.title || `Note #${noteCards.length - idx}`}</span>
+                          </h5>
+                          {isEditingThisCard && (
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500 text-slate-950 font-mono">
+                              Editing
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          {card.author && (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 flex items-center gap-1">
+                              <User className="w-2.5 h-2.5" />
+                              <span className="truncate max-w-[100px]">{card.author}</span>
+                              {isCurrentUser ? (
+                                <span className="text-[9px] font-mono text-emerald-600 dark:text-emerald-400 font-bold ml-0.5">(You)</span>
+                              ) : (
+                                <span className="text-[9px] font-mono text-purple-600 dark:text-purple-400 font-bold ml-0.5">(Remote)</span>
+                              )}
+                            </span>
+                          )}
+
+                          <span className="text-[10px] text-slate-400 flex items-center gap-1 font-mono">
+                            <Clock className="w-2.5 h-2.5" />
+                            <span>{formatCardDate(card.createdAt || card.updatedAt)}</span>
+                          </span>
+                        </div>
+                      </div>
+
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-dark-700 text-slate-500 shrink-0">
+                        {cardWords} words
+                      </span>
+                    </div>
+
+                    {/* Card Content (Rich HTML Preview) */}
+                    <div className="relative">
+                      <div
+                        className={`text-xs text-slate-700 dark:text-slate-200 leading-relaxed overflow-hidden break-words prose prose-sm dark:prose-invert max-w-none transition-all ${
+                          isLong && !isExpanded ? 'max-h-24 overflow-hidden relative' : ''
+                        }`}
+                        dangerouslySetInnerHTML={{ __html: card.content || '<p></p>' }}
+                      />
+                      {isLong && !isExpanded && (
+                        <div className="absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-white dark:from-dark-800 to-transparent pointer-events-none" />
+                      )}
+                    </div>
+
+                    {/* Show more / Show less toggle */}
+                    {isLong && (
+                      <button
+                        type="button"
+                        onClick={() => toggleCardExpanded(card.id)}
+                        className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 self-start"
+                      >
+                        {isExpanded ? (
+                          <>
+                            <ChevronUp className="w-3 h-3" /> Show Less
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown className="w-3 h-3" /> Show More
+                          </>
+                        )}
+                      </button>
+                    )}
+
+                    {/* Card Actions Footer */}
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-dark-700 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleEditCard(card)}
+                        className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-colors ${
+                          isEditingThisCard
+                            ? 'bg-amber-500 text-slate-950 font-bold'
+                            : 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20'
+                        }`}
+                        title="Edit this note card"
+                      >
+                        <Edit3 className="w-3 h-3" />
+                        <span>{isEditingThisCard ? 'Editing...' : 'Edit Note'}</span>
+                      </button>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleCopyCard(card)}
+                          className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-dark-700 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors relative"
+                          title="Copy note text"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          {copiedCardId === card.id && (
+                            <span className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[9px] px-1.5 py-0.5 rounded shadow">
+                              Copied!
+                            </span>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadCard(card)}
+                          className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-dark-700 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+                          title="Download note as .txt"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCard(card.id)}
+                          className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-400 hover:text-red-500 transition-colors"
+                          title="Delete note card"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

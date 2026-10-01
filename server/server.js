@@ -70,7 +70,7 @@ function uploadBufferToCloudinary(buffer, originalname, folder = 'ssb-psych-prep
 // ── Multer — always use memory storage; we decide where to put files after ────
 const memoryUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 250 * 1024 * 1024 } // 250 MB per file (supports video/PDF)
+  limits: { fileSize: 500 * 1024 * 1024 } // 500 MB per file (supports video/PDF)
 });
 
 // ── Local disk fallback (for development without Cloudinary) ──────────────────
@@ -316,10 +316,12 @@ app.get('/api/folders', async (req, res) => {
       })),
       lecturettesCount: f.lecturettes?.length || 0,
       lecturettes: (f.lecturettes || []).map(l => ({
-        id: l.id,
+        id: l.id || l._id?.toString() || l._id,
+        _id: l._id?.toString() || l.id,
         title: l.title,
         duration: l.duration,
         url: l.url,
+        publicId: l.publicId,
         recordedDate: l.recordedDate || f.dateFolder,
         recordedAt: l.recordedAt
       })),
@@ -338,7 +340,32 @@ app.get('/api/folders', async (req, res) => {
         plainText: f.notes?.plainText || '',
         author: f.notes?.author || '',
         updatedAt: f.notes?.updatedAt || null
-      }
+      },
+      noteCardsCount: f.noteCards?.length || (f.notes?.content && f.notes.content.trim() && f.notes.content !== '<p><br></p>' ? 1 : 0),
+      noteCards: (f.noteCards || []).map(nc => ({
+        id: nc.id,
+        title: nc.title || '',
+        content: nc.content || '',
+        plainText: nc.plainText || '',
+        author: nc.author || '',
+        createdAt: nc.createdAt,
+        updatedAt: nc.updatedAt
+      })),
+      gpesCount: f.gpes?.length || 0,
+      gpes: (f.gpes || []).map(g => ({
+        id: g.id,
+        title: g.title,
+        mapUrl: g.mapUrl,
+        scale: g.scale,
+        description: g.description || '',
+        narrativeImageUrl: g.narrativeImageUrl || '',
+        narrativeOriginalName: g.narrativeOriginalName || '',
+        modelSolution: g.modelSolution,
+        solutionsCount: g.solutions?.length || 0,
+        solutions: g.solutions || [],
+        createdAt: g.createdAt,
+        updatedAt: g.updatedAt
+      }))
     }));
     res.json(formatted);
   } catch (err) {
@@ -537,22 +564,201 @@ app.post('/api/folders', async (req, res) => {
   }
 });
 
-// 6b. GET notes for Date Folder
+// 6b. GET notes & note cards for Date Folder
 app.get('/api/folders/:dateFolder/notes', async (req, res) => {
   try {
     const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
-    res.json(folder.notes || { content: '', plainText: '', updatedAt: null });
+
+    // Auto-migrate legacy note to noteCards if noteCards is empty
+    let noteCards = folder.noteCards || [];
+    if (noteCards.length === 0 && folder.notes?.content && folder.notes.content.trim() && folder.notes.content !== '<p><br></p>') {
+      const legacyCard = {
+        id: 'note-legacy-' + (folder.notes.updatedAt ? new Date(folder.notes.updatedAt).getTime() : Date.now()),
+        title: 'Initial Practice Note',
+        content: folder.notes.content,
+        plainText: folder.notes.plainText || '',
+        author: folder.notes.author || '',
+        createdAt: folder.notes.updatedAt || new Date(),
+        updatedAt: folder.notes.updatedAt || new Date()
+      };
+      folder.noteCards = [legacyCard];
+      await folder.save();
+      noteCards = folder.noteCards;
+    }
+
+    res.json({
+      notes: folder.notes || { content: '', plainText: '', author: '', updatedAt: null },
+      noteCards: noteCards.map(nc => ({
+        id: nc.id,
+        title: nc.title || '',
+        content: nc.content,
+        plainText: nc.plainText || '',
+        author: nc.author || '',
+        createdAt: nc.createdAt,
+        updatedAt: nc.updatedAt
+      }))
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 6c. SAVE / UPDATE notes for Date Folder
+// 6c. POST / Create a new Note Card
+app.post('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    const { dateFolder } = req.params;
+    const { title = '', content = '', plainText = '', author = '' } = req.body;
+    const trimmedAuthor = (author || '').trim();
+    if (!trimmedAuthor) {
+      return res.status(400).json({ error: 'Reviewer name is compulsory' });
+    }
+    if (!content || (!plainText.trim() && content === '<p><br></p>')) {
+      return res.status(400).json({ error: 'Note content cannot be empty' });
+    }
+
+    let folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) {
+      folder = new DateFolder({
+        dateFolder,
+        tat: { pictures: [] },
+        wat: { words: [] },
+        solutions: [],
+        lecturettes: [],
+        reviews: [],
+        noteCards: []
+      });
+    }
+
+    if (!folder.noteCards) folder.noteCards = [];
+
+    const newNoteCard = {
+      id: 'note-' + Date.now() + '-' + Math.round(Math.random() * 1e4),
+      title: (title || '').trim(),
+      content,
+      plainText: plainText || '',
+      author: trimmedAuthor,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    folder.noteCards.unshift(newNoteCard);
+
+    // Keep folder.notes updated with latest for backward compatibility
+    folder.notes = {
+      content,
+      plainText,
+      author: trimmedAuthor,
+      updatedAt: new Date()
+    };
+
+    await folder.save();
+    res.json({
+      success: true,
+      message: 'Note card saved successfully',
+      noteCard: newNoteCard,
+      noteCards: folder.noteCards,
+      notes: folder.notes,
+      dateFolder
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6c-2. PUT / Update an existing Note Card by noteId
+app.put('/api/folders/:dateFolder/notes/:noteId', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    const { dateFolder, noteId } = req.params;
+    const { title, content, plainText, author } = req.body;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    if (!folder.noteCards) folder.noteCards = [];
+    const cardIndex = folder.noteCards.findIndex(c => c.id === noteId || c._id?.toString() === noteId);
+
+    if (cardIndex === -1) {
+      return res.status(404).json({ error: 'Note card not found' });
+    }
+
+    const card = folder.noteCards[cardIndex];
+    if (title !== undefined) card.title = title.trim();
+    if (content !== undefined) card.content = content;
+    if (plainText !== undefined) card.plainText = plainText;
+    if (author) card.author = author.trim();
+    card.updatedAt = new Date();
+
+    folder.markModified('noteCards');
+
+    // Also update legacy folder.notes if this is the first/newest card
+    if (cardIndex === 0) {
+      folder.notes = {
+        content: card.content,
+        plainText: card.plainText,
+        author: card.author,
+        updatedAt: card.updatedAt
+      };
+    }
+
+    await folder.save();
+    res.json({
+      success: true,
+      message: 'Note card updated successfully',
+      noteCard: card,
+      noteCards: folder.noteCards,
+      notes: folder.notes,
+      dateFolder
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6c-3. DELETE a Note Card by noteId
+app.delete('/api/folders/:dateFolder/notes/:noteId', async (req, res) => {
+  try {
+    const { dateFolder, noteId } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    if (!folder.noteCards) folder.noteCards = [];
+    folder.noteCards = folder.noteCards.filter(c => c.id !== noteId && c._id?.toString() !== noteId);
+
+    // Update folder.notes with latest remaining card or empty
+    if (folder.noteCards.length > 0) {
+      const latest = folder.noteCards[0];
+      folder.notes = {
+        content: latest.content,
+        plainText: latest.plainText,
+        author: latest.author,
+        updatedAt: latest.updatedAt
+      };
+    } else {
+      folder.notes = {
+        content: '',
+        plainText: '',
+        author: '',
+        updatedAt: null
+      };
+    }
+
+    await folder.save();
+    res.json({
+      success: true,
+      message: 'Note card deleted successfully',
+      noteCards: folder.noteCards,
+      notes: folder.notes
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6c-4. Legacy SAVE / UPDATE notes endpoint (backward compatibility)
 app.put('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), async (req, res) => {
   try {
     const { dateFolder } = req.params;
-    const { content = '', plainText = '', author = '' } = req.body;
+    const { title = '', content = '', plainText = '', author = '', id, noteId } = req.body;
     const trimmedAuthor = (author || '').trim();
     if (!trimmedAuthor) {
       return res.status(400).json({ error: 'Reviewer name is compulsory' });
@@ -561,6 +767,34 @@ app.put('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), async
     if (!folder) {
       folder = new DateFolder({ dateFolder });
     }
+    if (!folder.noteCards) folder.noteCards = [];
+
+    const targetId = id || noteId;
+    let targetCard = null;
+    if (targetId) {
+      targetCard = folder.noteCards.find(c => c.id === targetId || c._id?.toString() === targetId);
+    }
+
+    if (targetCard) {
+      if (title !== undefined) targetCard.title = title.trim();
+      targetCard.content = content;
+      targetCard.plainText = plainText;
+      targetCard.author = trimmedAuthor;
+      targetCard.updatedAt = new Date();
+      folder.markModified('noteCards');
+    } else {
+      targetCard = {
+        id: 'note-' + Date.now() + '-' + Math.round(Math.random() * 1e4),
+        title: (title || '').trim(),
+        content,
+        plainText,
+        author: trimmedAuthor,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      folder.noteCards.unshift(targetCard);
+    }
+
     folder.notes = {
       content,
       plainText,
@@ -568,7 +802,14 @@ app.put('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), async
       updatedAt: new Date()
     };
     await folder.save();
-    res.json({ success: true, message: 'Notes saved successfully', notes: folder.notes, dateFolder });
+    res.json({
+      success: true,
+      message: 'Notes saved successfully',
+      notes: folder.notes,
+      noteCard: targetCard,
+      noteCards: folder.noteCards,
+      dateFolder
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -662,6 +903,23 @@ app.get('/api/folders/:dateFolder/reviews', async (req, res) => {
     const { dateFolder } = req.params;
     const folder = await DateFolder.findOne({ dateFolder });
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    let noteCards = folder.noteCards || [];
+    if (noteCards.length === 0 && folder.notes?.content && folder.notes.content.trim() && folder.notes.content !== '<p><br></p>') {
+      const legacyCard = {
+        id: 'note-legacy-' + (folder.notes.updatedAt ? new Date(folder.notes.updatedAt).getTime() : Date.now()),
+        title: 'Initial Practice Note',
+        content: folder.notes.content,
+        plainText: folder.notes.plainText || '',
+        author: folder.notes.author || '',
+        createdAt: folder.notes.updatedAt || new Date(),
+        updatedAt: folder.notes.updatedAt || new Date()
+      };
+      folder.noteCards = [legacyCard];
+      await folder.save();
+      noteCards = folder.noteCards;
+    }
+
     res.json({
       reviews: (folder.reviews || []).map(r => ({
         id: r.id,
@@ -672,7 +930,16 @@ app.get('/api/folders/:dateFolder/reviews', async (req, res) => {
         reviewerName: r.reviewerName || '',
         recordedAt: r.recordedAt
       })),
-      notes: folder.notes || { content: '', plainText: '', author: '', updatedAt: null }
+      notes: folder.notes || { content: '', plainText: '', author: '', updatedAt: null },
+      noteCards: noteCards.map(nc => ({
+        id: nc.id,
+        title: nc.title || '',
+        content: nc.content,
+        plainText: nc.plainText || '',
+        author: nc.author || '',
+        createdAt: nc.createdAt,
+        updatedAt: nc.updatedAt
+      }))
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1136,7 +1403,7 @@ app.delete('/api/folders/:dateFolder/solutions/:solutionId', async (req, res) =>
   }
 });
 
-// 14. Upload live lecturette video
+// 14. Upload live lecturette video — ultra-fast immediate response + background Cloudinary sync
 app.post('/api/folders/:dateFolder/lecturette',
   (req, res, next) => {
     memoryUpload.single('video')(req, res, (err) => {
@@ -1162,27 +1429,23 @@ app.post('/api/folders/:dateFolder/lecturette',
         });
       }
 
-      let url, fileId;
-      if (cloudinary) {
-        const result = await uploadBufferToCloudinary(req.file.buffer, req.file.originalname, 'ssb-psych-prep/lecturettes', 'video');
-        url = result.secure_url;
-        fileId = result.public_id;
-      } else {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        const ext = path.extname(req.file.originalname) || '.webm';
-        const filename = 'lecturette-' + uniqueSuffix + ext;
-        fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-        url = `/uploads/${filename}`;
-        fileId = filename;
-      }
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const ext = path.extname(req.file.originalname) || '.webm';
+      const filename = 'lecturette-' + uniqueSuffix + ext;
+      const localFilePath = path.join(uploadsDir, filename);
+
+      // 1. Instantly write to local disk (takes < 20ms)
+      fs.writeFileSync(localFilePath, req.file.buffer);
+      const localUrl = `/uploads/${filename}`;
+      const newLecId = 'lec-' + Date.now();
 
       const newLecturette = {
-        id: 'lec-' + Date.now(),
-        title: title || `Lecturette ${dateFolder}`,
+        id: newLecId,
+        title: (title || `Lecturette ${dateFolder}`).trim(),
         recordedDate: req.body.recordedDate || dateFolder,
         duration: Number(duration) || 0,
-        url,
-        publicId: fileId,
+        url: localUrl,
+        publicId: filename,
         recordedAt: new Date()
       };
 
@@ -1190,28 +1453,148 @@ app.post('/api/folders/:dateFolder/lecturette',
       folder.lecturettes.unshift(newLecturette);
       await folder.save();
 
-      res.json({ success: true, message: 'Lecturette video saved', lecturette: newLecturette, folder });
+      // 2. Also write to GridFS in parallel for permanent cloud DB backup
+      writeBufferToGridFS(filename, req.file.buffer, {
+        lecId: newLecId,
+        dateFolder,
+        originalName: req.file.originalname,
+        contentType: req.file.mimetype || 'video/webm'
+      }).catch(gfsErr => console.warn('GridFS lecturette save warning:', gfsErr.message));
+
+      // 3. Return immediately to the client so upload completes in milliseconds!
+      res.json({
+        success: true,
+        message: 'Lecturette video saved successfully',
+        lecturette: newLecturette,
+        folder
+      });
+
+      // 4. In background: upload to Cloudinary using fast multi-part chunked upload
+      if (cloudinary) {
+        (async () => {
+          try {
+            console.log(`⚡ Offloading video ${filename} (${(req.file.size / (1024 * 1024)).toFixed(1)} MB) to Cloudinary in background...`);
+            const result = await cloudinary.uploader.upload_large(localFilePath, {
+              resource_type: 'video',
+              folder: 'ssb-psych-prep/lecturettes',
+              chunk_size: 6000000,
+              timeout: 300000
+            });
+            if (result?.secure_url) {
+              const freshFolder = await DateFolder.findOne({ dateFolder });
+              if (freshFolder && freshFolder.lecturettes) {
+                const lecItem = freshFolder.lecturettes.find(l => l.id === newLecId || l.publicId === filename);
+                if (lecItem) {
+                  lecItem.url = result.secure_url;
+                  lecItem.publicId = result.public_id;
+                  freshFolder.markModified('lecturettes');
+                  await freshFolder.save();
+                  console.log(`☁️ Cloudinary video background upload completed: ${result.secure_url}`);
+                }
+              }
+            }
+          } catch (bgErr) {
+            console.warn(`Cloudinary background video upload warning for ${filename}:`, bgErr.message);
+          }
+        })();
+      }
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   }
 );
 
-// 15. DELETE lecturette video
+// Fallback: stream lecturette video from GridFS if local file is missing on ephemeral disk
+app.get('/uploads/lecturette-:file', async (req, res, next) => {
+  const filename = 'lecturette-' + req.params.file;
+  const filePath = path.join(uploadsDir, filename);
+  if (fs.existsSync(filePath)) {
+    return next(); // let express.static serve it with Range support
+  }
+  const streamData = await getGridFSStream(filename);
+  if (streamData) {
+    res.setHeader('Content-Type', streamData.file?.metadata?.contentType || 'video/webm');
+    return streamData.stream.pipe(res);
+  }
+  next();
+});
+
+// 15. DELETE lecturette video by folder and lecturette ID
 app.delete('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res) => {
   try {
     const { dateFolder, lecturetteId } = req.params;
-    const folder = await DateFolder.findOne({ dateFolder });
-    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+    let folder = await DateFolder.findOne({ dateFolder });
+
+    // Fallback: If not found in dateFolder, search all folders
+    if (!folder || !folder.lecturettes?.some(l => l.id === lecturetteId || l._id?.toString() === lecturetteId)) {
+      const query = {
+        $or: [
+          { 'lecturettes.id': lecturetteId },
+          ...(mongoose.Types.ObjectId.isValid(lecturetteId) ? [{ 'lecturettes._id': new mongoose.Types.ObjectId(lecturetteId) }] : [])
+        ]
+      };
+      const anyFolder = await DateFolder.findOne(query);
+      if (anyFolder) folder = anyFolder;
+    }
+
+    if (!folder) return res.status(404).json({ error: 'Folder or lecturette not found' });
 
     const lecturette = folder.lecturettes?.find(l => l.id === lecturetteId || l._id?.toString() === lecturetteId);
     if (lecturette) {
       await deleteStoredFile(lecturette.url, lecturette.publicId, 'video');
+      await deleteFromGridFS(lecturette.publicId).catch(() => {});
+      const localName = path.basename((lecturette.url || '').split('?')[0]);
+      if (localName) {
+        await deleteFromGridFS(localName).catch(() => {});
+        const localPath = path.join(uploadsDir, localName);
+        if (fs.existsSync(localPath)) {
+          try { fs.unlinkSync(localPath); } catch (e) {}
+        }
+      }
     }
 
     folder.lecturettes = (folder.lecturettes || []).filter(
       l => l.id !== lecturetteId && l._id?.toString() !== lecturetteId
     );
+    folder.markModified('lecturettes');
+    await folder.save();
+    res.json({ success: true, message: 'Lecturette video deleted', folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 15b. Direct top-level DELETE route for lecturette
+app.delete('/api/lecturettes/:lecturetteId', async (req, res) => {
+  try {
+    const { lecturetteId } = req.params;
+    const query = {
+      $or: [
+        { 'lecturettes.id': lecturetteId },
+        ...(mongoose.Types.ObjectId.isValid(lecturetteId) ? [{ 'lecturettes._id': new mongoose.Types.ObjectId(lecturetteId) }] : [])
+      ]
+    };
+    const folder = await DateFolder.findOne(query);
+    if (!folder) return res.status(404).json({ error: 'Lecturette not found' });
+
+    const lecturette = folder.lecturettes?.find(l => l.id === lecturetteId || l._id?.toString() === lecturetteId);
+    if (lecturette) {
+      await deleteStoredFile(lecturette.url, lecturette.publicId, 'video');
+      await deleteFromGridFS(lecturette.publicId).catch(() => {});
+      const localName = path.basename((lecturette.url || '').split('?')[0]);
+      if (localName) {
+        await deleteFromGridFS(localName).catch(() => {});
+        const localPath = path.join(uploadsDir, localName);
+        if (fs.existsSync(localPath)) {
+          try { fs.unlinkSync(localPath); } catch (e) {}
+        }
+      }
+    }
+
+    folder.lecturettes = (folder.lecturettes || []).filter(
+      l => l.id !== lecturetteId && l._id?.toString() !== lecturetteId
+    );
+    folder.markModified('lecturettes');
     await folder.save();
     res.json({ success: true, message: 'Lecturette video deleted', folder });
   } catch (err) {
@@ -1224,7 +1607,19 @@ app.patch('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res) 
   try {
     const { dateFolder, lecturetteId } = req.params;
     const { title, recordedDate } = req.body;
-    const folder = await DateFolder.findOne({ dateFolder });
+    let folder = await DateFolder.findOne({ dateFolder });
+
+    if (!folder || !folder.lecturettes?.some(l => l.id === lecturetteId || l._id?.toString() === lecturetteId)) {
+      const query = {
+        $or: [
+          { 'lecturettes.id': lecturetteId },
+          ...(mongoose.Types.ObjectId.isValid(lecturetteId) ? [{ 'lecturettes._id': new mongoose.Types.ObjectId(lecturetteId) }] : [])
+        ]
+      };
+      const anyFolder = await DateFolder.findOne(query);
+      if (anyFolder) folder = anyFolder;
+    }
+
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
 
     const lecIndex = (folder.lecturettes || []).findIndex(
@@ -1235,11 +1630,12 @@ app.patch('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res) 
     const lec = folder.lecturettes[lecIndex];
     if (title !== undefined) lec.title = title;
 
-    if (recordedDate && recordedDate !== dateFolder) {
+    if (recordedDate && recordedDate !== folder.dateFolder) {
       let targetFolder = await DateFolder.findOne({ dateFolder: recordedDate });
       if (!targetFolder) {
         targetFolder = new DateFolder({
           dateFolder: recordedDate,
+          folderTitle: `Batch ${recordedDate}`,
           tat: { pictures: [] },
           wat: { words: [] },
           solutions: [],
@@ -1268,6 +1664,340 @@ app.patch('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res) 
   }
 });
 
+// ─────────────────────── GPE (Group Planning Exercise) ROUTES ────────────────
+
+// 17. GET all GPEs across all folders
+app.get('/api/gpes', async (req, res) => {
+  try {
+    const folders = await DateFolder.find({ 'gpes.0': { $exists: true } }).sort({ dateFolder: -1 });
+    const allGpes = [];
+    folders.forEach(f => {
+      (f.gpes || []).forEach(g => {
+        allGpes.push({
+          id: g.id,
+          dateFolder: f.dateFolder,
+          folderTitle: f.folderTitle,
+          title: g.title,
+          mapUrl: g.mapUrl,
+          scale: g.scale,
+          description: g.description || '',
+          narrativeImageUrl: g.narrativeImageUrl || '',
+          narrativeOriginalName: g.narrativeOriginalName || '',
+          modelSolution: g.modelSolution,
+          solutionsCount: g.solutions?.length || 0,
+          solutions: g.solutions || [],
+          createdAt: g.createdAt,
+          updatedAt: g.updatedAt
+        });
+      });
+    });
+    res.json(allGpes);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 18. GET GPEs for a specific dateFolder
+app.get('/api/folders/:dateFolder/gpes', async (req, res) => {
+  try {
+    const { dateFolder } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+    res.json(folder.gpes || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 19. POST / Upload a GPE map and narrative (image or text)
+app.post('/api/folders/:dateFolder/gpes', (req, res, next) => {
+  memoryUpload.fields([
+    { name: 'map', maxCount: 1 },
+    { name: 'narrativeImage', maxCount: 1 }
+  ])(req, res, (err) => {
+    if (err) return res.status(400).json({ error: `Upload error: ${err.message}` });
+    next();
+  });
+}, async (req, res) => {
+  try {
+    const { dateFolder } = req.params;
+    const { title, description = '', scale, modelSolution, mapUrl: providedMapUrl, narrativeImageUrl: providedNarrativeUrl } = req.body;
+
+    const mapFile = req.files?.['map']?.[0] || req.file;
+    const narrativeFile = req.files?.['narrativeImage']?.[0];
+
+    if (!mapFile && !providedMapUrl) {
+      return res.status(400).json({ error: 'GPE map image is required' });
+    }
+    const hasText = description && description.trim().length > 0;
+    const hasImage = narrativeFile || providedNarrativeUrl;
+    if (!hasText && !hasImage) {
+      return res.status(400).json({ error: 'Please provide the GPE narrative either by pasting text or uploading a narrative card image' });
+    }
+
+    let folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) {
+      folder = new DateFolder({
+        dateFolder,
+        folderTitle: `Batch ${dateFolder}`,
+        tat: { pictures: [] },
+        wat: { words: [] },
+        solutions: [],
+        lecturettes: [],
+        gpes: []
+      });
+    }
+
+    let mapUrl = providedMapUrl || '';
+    let mapPublicId = '';
+    let originalMapName = mapFile ? mapFile.originalname : 'GPE_Map.jpg';
+
+    if (mapFile) {
+      if (cloudinary) {
+        const result = await uploadBufferToCloudinary(
+          mapFile.buffer,
+          mapFile.originalname,
+          'ssb-psych-prep/gpe/maps',
+          'image'
+        );
+        mapUrl = result.secure_url;
+        mapPublicId = result.public_id;
+      } else {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        const ext = path.extname(mapFile.originalname) || '.jpg';
+        const filename = 'gpe-map-' + uniqueSuffix + ext;
+        fs.writeFileSync(path.join(uploadsDir, filename), mapFile.buffer);
+        mapUrl = `/uploads/${filename}`;
+        mapPublicId = filename;
+      }
+    }
+
+    let narrativeImageUrl = providedNarrativeUrl || '';
+    let narrativePublicId = '';
+    let narrativeOriginalName = narrativeFile ? narrativeFile.originalname : '';
+
+    if (narrativeFile) {
+      if (cloudinary) {
+        const result = await uploadBufferToCloudinary(
+          narrativeFile.buffer,
+          narrativeFile.originalname,
+          'ssb-psych-prep/gpe/narratives',
+          'image'
+        );
+        narrativeImageUrl = result.secure_url;
+        narrativePublicId = result.public_id;
+      } else {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        const ext = path.extname(narrativeFile.originalname) || '.jpg';
+        const filename = 'gpe-narrative-' + uniqueSuffix + ext;
+        fs.writeFileSync(path.join(uploadsDir, filename), narrativeFile.buffer);
+        narrativeImageUrl = `/uploads/${filename}`;
+        narrativePublicId = filename;
+      }
+    }
+
+    const newGpe = {
+      id: 'gpe-' + Date.now(),
+      title: (title || `GPE Exercise ${dateFolder}`).trim(),
+      mapUrl,
+      mapPublicId,
+      originalMapName,
+      description: (description || '').trim(),
+      narrativeImageUrl,
+      narrativePublicId,
+      narrativeOriginalName,
+      scale: (scale || '1 cm = 2 km').trim(),
+      modelSolution: (modelSolution || '').trim(),
+      solutions: [],
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    if (!folder.gpes) folder.gpes = [];
+    folder.gpes.unshift(newGpe);
+    await folder.save();
+
+    res.json({ success: true, message: 'GPE exercise uploaded successfully', gpe: newGpe, folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 20. PUT / Update an existing GPE
+app.put('/api/folders/:dateFolder/gpes/:gpeId', (req, res, next) => {
+  memoryUpload.single('map')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: `Upload error: ${err.message}` });
+    next();
+  });
+}, async (req, res) => {
+  try {
+    const { dateFolder, gpeId } = req.params;
+    const { title, description, scale, modelSolution } = req.body;
+
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const gpe = folder.gpes?.find(g => g.id === gpeId || g._id?.toString() === gpeId);
+    if (!gpe) return res.status(404).json({ error: 'GPE exercise not found' });
+
+    if (title !== undefined) gpe.title = title.trim();
+    if (description !== undefined) gpe.description = description.trim();
+    if (scale !== undefined) gpe.scale = scale.trim();
+    if (modelSolution !== undefined) gpe.modelSolution = modelSolution.trim();
+
+    if (req.file) {
+      await deleteStoredFile(gpe.mapUrl, gpe.mapPublicId, 'image');
+      if (cloudinary) {
+        const result = await uploadBufferToCloudinary(
+          req.file.buffer,
+          req.file.originalname,
+          'ssb-psych-prep/gpe',
+          'image'
+        );
+        gpe.mapUrl = result.secure_url;
+        gpe.mapPublicId = result.public_id;
+      } else {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        const ext = path.extname(req.file.originalname) || '.jpg';
+        const filename = 'gpe-map-' + uniqueSuffix + ext;
+        fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
+        gpe.mapUrl = `/uploads/${filename}`;
+        gpe.mapPublicId = filename;
+      }
+      gpe.originalMapName = req.file.originalname;
+    }
+
+    gpe.updatedAt = new Date();
+    folder.markModified('gpes');
+    await folder.save();
+
+    res.json({ success: true, message: 'GPE updated successfully', gpe, folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 21. DELETE a GPE
+app.delete('/api/folders/:dateFolder/gpes/:gpeId', async (req, res) => {
+  try {
+    const { dateFolder, gpeId } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const gpe = folder.gpes?.find(g => g.id === gpeId || g._id?.toString() === gpeId);
+    if (gpe) {
+      await deleteStoredFile(gpe.mapUrl, gpe.mapPublicId, 'image');
+      if (gpe.narrativeImageUrl) {
+        await deleteStoredFile(gpe.narrativeImageUrl, gpe.narrativePublicId, 'image');
+      }
+      if (gpe.solutions) {
+        for (const sol of gpe.solutions) {
+          if (sol.solutionImageUrl) {
+            await deleteStoredFile(sol.solutionImageUrl, sol.solutionPublicId, 'image');
+          }
+        }
+      }
+      folder.gpes = folder.gpes.filter(g => g.id !== gpeId && g._id?.toString() !== gpeId);
+      await folder.save();
+    }
+    res.json({ success: true, message: 'GPE deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 22. POST / Upload Candidate Solution Photo (stored on Cloudinary)
+app.post('/api/folders/:dateFolder/gpes/:gpeId/solutions', (req, res, next) => {
+  memoryUpload.single('solutionPhoto')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: `Upload error: ${err.message}` });
+    next();
+  });
+}, async (req, res) => {
+  try {
+    const { dateFolder, gpeId } = req.params;
+    const { author = 'Candidate', solutionText = '', solutionImageUrl: providedImageUrl } = req.body;
+    const photoFile = req.file;
+
+    if (!photoFile && !providedImageUrl && (!solutionText || !solutionText.trim())) {
+      return res.status(400).json({ error: 'Please upload a photo of your handwritten solution' });
+    }
+
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const gpe = folder.gpes?.find(g => g.id === gpeId || g._id?.toString() === gpeId);
+    if (!gpe) return res.status(404).json({ error: 'GPE exercise not found' });
+
+    let solutionImageUrl = providedImageUrl || '';
+    let solutionPublicId = '';
+    let originalImageName = photoFile ? photoFile.originalname : '';
+
+    if (photoFile) {
+      if (cloudinary) {
+        const result = await uploadBufferToCloudinary(
+          photoFile.buffer,
+          photoFile.originalname,
+          'ssb-psych-prep/gpe/solutions',
+          'image'
+        );
+        solutionImageUrl = result.secure_url;
+        solutionPublicId = result.public_id;
+      } else {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        const ext = path.extname(photoFile.originalname) || '.jpg';
+        const filename = 'gpe-solution-' + uniqueSuffix + ext;
+        fs.writeFileSync(path.join(uploadsDir, filename), photoFile.buffer);
+        solutionImageUrl = `/uploads/${filename}`;
+        solutionPublicId = filename;
+      }
+    }
+
+    const newSolution = {
+      id: 'gpe-sol-' + Date.now(),
+      author: (author || 'Candidate').trim(),
+      solutionText: (solutionText || '').trim(),
+      solutionImageUrl,
+      solutionPublicId,
+      originalImageName,
+      submittedAt: new Date()
+    };
+
+    if (!gpe.solutions) gpe.solutions = [];
+    gpe.solutions.unshift(newSolution);
+    folder.markModified('gpes');
+    await folder.save();
+
+    res.json({ success: true, message: 'Solution photo uploaded and saved successfully', solution: newSolution, gpe });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 22b. DELETE a specific Candidate Solution from a GPE
+app.delete('/api/folders/:dateFolder/gpes/:gpeId/solutions/:solutionId', async (req, res) => {
+  try {
+    const { dateFolder, gpeId, solutionId } = req.params;
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const gpe = folder.gpes?.find(g => g.id === gpeId || g._id?.toString() === gpeId);
+    if (!gpe) return res.status(404).json({ error: 'GPE exercise not found' });
+
+    const sol = gpe.solutions?.find(s => s.id === solutionId || s._id?.toString() === solutionId);
+    if (sol && sol.solutionImageUrl) {
+      await deleteStoredFile(sol.solutionImageUrl, sol.solutionPublicId, 'image');
+    }
+
+    gpe.solutions = (gpe.solutions || []).filter(s => s.id !== solutionId && s._id?.toString() !== solutionId);
+    folder.markModified('gpes');
+    await folder.save();
+
+    res.json({ success: true, message: 'Solution deleted successfully', gpe });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Helper: delete a file from Cloudinary or local disk ──────────────────────
 async function deleteStoredFile(url, publicId, resourceType = 'image') {
   try {
@@ -1283,9 +2013,14 @@ async function deleteStoredFile(url, publicId, resourceType = 'image') {
           }
         }
       }
-    } else if (url && url.startsWith('/uploads/')) {
-      const filePath = path.join(__dirname, '..', url);
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } else if (url) {
+      const filename = path.basename(url.split('?')[0]);
+      if (filename) {
+        const filePath = path.join(uploadsDir, filename);
+        if (fs.existsSync(filePath)) {
+          try { fs.unlinkSync(filePath); } catch (e) {}
+        }
+      }
     }
   } catch (e) {
     console.warn('Could not delete file:', e.message);
