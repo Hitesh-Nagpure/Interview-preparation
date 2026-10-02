@@ -55,6 +55,14 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const bellIntervalRef = useRef(null);
   const bellToastTimerRef = useRef(null);
 
+  // Microphone and Live Sound Detection state
+  const [micActive, setMicActive] = useState(false);
+  const [micMuted, setMicMuted] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0); // 0 - 100 for live VU visualizer
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const animFrameRef = useRef(null);
+
   // Custom playback controls state for review
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -72,8 +80,69 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const streamRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Safely stop all active stream tracks
+  // Setup real-time audio volume visualizer (VU meter)
+  const setupAudioAnalyser = (mediaStream) => {
+    try {
+      if (!mediaStream) return;
+      const audioTracks = mediaStream.getAudioTracks();
+      if (!audioTracks.length) {
+        setAudioLevel(0);
+        return;
+      }
+
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        try { audioContextRef.current.close(); } catch (e) {}
+        audioContextRef.current = null;
+      }
+
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const audioCtx = new AudioCtx();
+      audioContextRef.current = audioCtx;
+
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+      source.connect(analyser);
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      const checkVolume = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avg = sum / dataArray.length;
+        const normalized = Math.min(100, Math.round((avg / 128) * 100));
+        setAudioLevel(normalized);
+        animFrameRef.current = requestAnimationFrame(checkVolume);
+      };
+
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+      checkVolume();
+    } catch (err) {
+      console.warn('Audio analyser note:', err);
+    }
+  };
+
+  // Safely stop all active stream tracks and audio analyzers
   const stopCamera = () => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      try { audioContextRef.current.close(); } catch (e) {}
+      audioContextRef.current = null;
+    }
+    setAudioLevel(0);
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => {
         try { track.stop(); } catch (e) {}
@@ -87,52 +156,162 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       setStream(null);
     }
     setCameraActive(false);
+    setMicActive(false);
   };
 
-  // Start / Stop Camera Stream with multi-tier fallback
+  // Ensure audio track is active, healthy, and attached to current stream
+  const ensureAudioTrack = async (currentStream) => {
+    if (!currentStream) return null;
+    const existingAudio = currentStream.getAudioTracks();
+    const hasLiveAudio = existingAudio.some(t => t.readyState === 'live');
+    if (hasLiveAudio) {
+      existingAudio.forEach(t => { t.enabled = true; });
+      setMicActive(true);
+      setMicMuted(false);
+      setupAudioAnalyser(currentStream);
+      return currentStream;
+    }
+
+    try {
+      const audioStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      }).catch(() => navigator.mediaDevices.getUserMedia({ audio: true }));
+
+      if (audioStream) {
+        const newTrack = audioStream.getAudioTracks()[0];
+        if (newTrack) {
+          existingAudio.forEach(t => {
+            try { t.stop(); currentStream.removeTrack(t); } catch (e) {}
+          });
+          currentStream.addTrack(newTrack);
+          streamRef.current = currentStream;
+          setStream(currentStream);
+          setMicActive(true);
+          setMicMuted(false);
+          setupAudioAnalyser(currentStream);
+        }
+      }
+    } catch (err) {
+      console.warn('Microphone permission / acquisition notice:', err.message);
+    }
+    return currentStream;
+  };
+
+  // Toggle Microphone Mute or Enable
+  const toggleMicrophone = async () => {
+    const activeStream = streamRef.current || stream;
+    if (!activeStream) {
+      startCamera();
+      return;
+    }
+
+    const audioTracks = activeStream.getAudioTracks();
+    if (audioTracks.length === 0 || !audioTracks.some(t => t.readyState === 'live')) {
+      try {
+        const audioStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        }).catch(() => navigator.mediaDevices.getUserMedia({ audio: true }));
+
+        const newTrack = audioStream?.getAudioTracks()?.[0];
+        if (newTrack) {
+          activeStream.addTrack(newTrack);
+          streamRef.current = activeStream;
+          setStream(activeStream);
+          setMicActive(true);
+          setMicMuted(false);
+          setupAudioAnalyser(activeStream);
+        }
+      } catch (err) {
+        setError('Microphone access denied or device unavailable: ' + err.message);
+      }
+    } else {
+      const nextMuted = !micMuted;
+      audioTracks.forEach(t => { t.enabled = !nextMuted; });
+      setMicMuted(nextMuted);
+    }
+  };
+
+  // Start / Stop Camera & Mic Stream with multi-tier fallback
   const startCamera = async () => {
     setError(null);
     stopCamera();
 
-    // DirectShow/MediaFoundation on Windows throws NotReadableError if facingMode: 'user' is specified
-    const constraintTiers = [
-      // Tier 1: 720p ideal, audio enabled (no facingMode)
-      { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true },
-      // Tier 2: Basic video + audio
-      { video: true, audio: true },
-      // Tier 3: Basic video only (in case microphone is locked in exclusive mode by another app)
-      { video: true, audio: false }
-    ];
-
-    let mediaStream = null;
+    let videoStream = null;
+    let audioStream = null;
     let lastError = null;
 
-    for (const constraints of constraintTiers) {
+    // 1. Acquire video stream (Tier 1: 720p ideal, Tier 2: default video)
+    const videoTiers = [
+      { width: { ideal: 1280 }, height: { ideal: 720 } },
+      true
+    ];
+
+    for (const vConstraint of videoTiers) {
       try {
-        mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-        if (mediaStream) break;
+        videoStream = await navigator.mediaDevices.getUserMedia({ video: vConstraint });
+        if (videoStream) break;
       } catch (err) {
         lastError = err;
-        // Continue to try fallback constraints
       }
     }
 
-    if (mediaStream) {
-      streamRef.current = mediaStream;
-      setStream(mediaStream);
-      setCameraActive(true);
-      if (liveVideoRef.current) {
-        liveVideoRef.current.srcObject = mediaStream;
-      }
-    } else {
+    if (!videoStream) {
       const errMsg = lastError?.message || 'Unknown error';
       if (lastError?.name === 'NotReadableError' || errMsg.toLowerCase().includes('video source')) {
-        setError('Camera is currently in use or locked by another application (e.g. Teams, Zoom, Skype, or another tab), or requires device reset. Please close any apps using the camera and click "Retry Camera".');
+        setError('Camera is currently in use or locked by another application (e.g. Teams, Zoom, Skype, or another tab). Please close any apps using the camera and click "Retry Camera".');
       } else if (lastError?.name === 'NotAllowedError' || lastError?.name === 'PermissionDeniedError') {
-        setError('Camera/Microphone permission denied. Please allow camera and microphone access in browser site settings and reload.');
+        setError('Camera permission denied. Please allow camera and microphone access in browser site settings and reload.');
       } else {
-        setError(`Camera/Microphone not available (${errMsg}). Check device connection and click "Retry Camera".`);
+        setError(`Camera not available (${errMsg}). Check device connection and click "Retry Camera".`);
       }
+      return;
+    }
+
+    // 2. Acquire audio stream with speech-enhancement constraints
+    try {
+      audioStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      }).catch(() => navigator.mediaDevices.getUserMedia({ audio: true }));
+    } catch (aErr) {
+      console.warn('Microphone auto-acquisition deferred or unavailable:', aErr.message);
+    }
+
+    // 3. Combine video + audio tracks into a unified MediaStream
+    const combinedTracks = [
+      ...videoStream.getVideoTracks(),
+      ...(audioStream ? audioStream.getAudioTracks() : [])
+    ];
+    const combinedStream = new MediaStream(combinedTracks);
+
+    streamRef.current = combinedStream;
+    setStream(combinedStream);
+    setCameraActive(true);
+
+    const hasAudio = combinedStream.getAudioTracks().length > 0;
+    setMicActive(hasAudio);
+    setMicMuted(false);
+
+    if (hasAudio) {
+      setupAudioAnalyser(combinedStream);
+    }
+
+    if (liveVideoRef.current) {
+      liveVideoRef.current.srcObject = combinedStream;
     }
   };
 
@@ -161,16 +340,20 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     } catch (e) {}
   };
 
-  const handleInitiateRecording = () => {
-    if (!stream) {
+  const handleInitiateRecording = async () => {
+    let currentStream = streamRef.current || stream;
+    if (!currentStream) {
       setError('Please enable camera before recording.');
       return;
     }
     setError(null);
     setUploadSuccess(null);
 
+    // Actively verify and attach audio track on user gesture
+    currentStream = await ensureAudioTrack(currentStream);
+
     if (waitTime === 0) {
-      executeStartRecording();
+      executeStartRecording(currentStream);
       return;
     }
 
@@ -186,7 +369,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
           countdownIntervalRef.current = null;
           soundEngine.playCountdownTick(true);
           setCountdown(null);
-          executeStartRecording();
+          executeStartRecording(streamRef.current || currentStream);
           return null;
         }
         soundEngine.playCountdownTick(false);
@@ -204,12 +387,29 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     setRecordingStatus('IDLE');
   };
 
-  // Execute recording start with optimized bitrate and SSB bell listener
-  const executeStartRecording = () => {
-    if (!stream) {
+  // Execute recording start with synchronized audio, optimized bitrate, and SSB bell listener
+  const executeStartRecording = async (providedStream) => {
+    let activeStream = providedStream || streamRef.current || stream;
+    if (!activeStream) {
       setError('Please enable camera before recording.');
       return;
     }
+
+    // Ensure audio track is healthy and unmuted
+    activeStream = await ensureAudioTrack(activeStream);
+    const audioTracks = activeStream.getAudioTracks();
+    const hasAudio = audioTracks.some(t => t.readyState === 'live' && t.enabled);
+
+    if (!hasAudio) {
+      const proceed = window.confirm(
+        'Notice: Microphone is not detected or is muted. Your lecturette will be recorded WITHOUT sound.\n\nClick OK to record video-only, or Cancel to enable your microphone.'
+      );
+      if (!proceed) {
+        setRecordingStatus('IDLE');
+        return;
+      }
+    }
+
     setError(null);
     setUploadSuccess(null);
     chunksRef.current = [];
@@ -236,15 +436,27 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
 
     try {
-      // Optimize bitrate to 1.2 Mbps (drops size by ~85% for lightning-fast Cloudinary upload)
+      // Optimize bitrate to 1.2 Mbps video and 128 kbps audio
       const options = {
-        videoBitsPerSecond: 1_200_000,
-        audioBitsPerSecond: 128_000
+        videoBitsPerSecond: 1_200_000
       };
+      if (hasAudio) {
+        options.audioBitsPerSecond = 128_000;
+      }
       if (selectedMimeType) {
         options.mimeType = selectedMimeType;
       }
-      const mr = new MediaRecorder(stream, options);
+
+      let mr = null;
+      try {
+        mr = new MediaRecorder(activeStream, options);
+      } catch (e1) {
+        try {
+          mr = new MediaRecorder(activeStream, selectedMimeType ? { mimeType: selectedMimeType } : {});
+        } catch (e2) {
+          mr = new MediaRecorder(activeStream);
+        }
+      }
 
       mr.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
@@ -253,7 +465,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       };
 
       mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: selectedMimeType || 'video/webm' });
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType || selectedMimeType || 'video/webm' });
         setRecordedBlob(blob);
         const url = URL.createObjectURL(blob);
         setRecordedUrl(url);
@@ -522,6 +734,9 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     setCurrentTime(0);
     setVideoDuration(0);
     totalDurationRef.current = 0;
+    if (streamRef.current) {
+      setupAudioAnalyser(streamRef.current);
+    }
   };
 
   useEffect(() => {
@@ -874,13 +1089,27 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                 </div>
               )}
 
-              {/* Recording Indicator (no timer shown) */}
+              {/* Recording Indicator with Live Mic Status */}
               {recordingStatus === 'RECORDING' && (
-                <div className="absolute top-4 left-4 flex items-center gap-2.5 bg-black/70 backdrop-blur-md px-3 py-1 rounded-full border border-red-500/50 z-20">
+                <div className="absolute top-4 left-4 flex items-center gap-2.5 bg-black/75 backdrop-blur-md px-3 py-1 rounded-full border border-red-500/50 z-20">
                   <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
                   <span className="text-[11px] font-bold text-red-400 uppercase tracking-widest font-mono">
                     REC
                   </span>
+                  {micActive && !micMuted ? (
+                    <span className="flex items-center gap-1 border-l border-white/20 pl-2 text-emerald-400">
+                      <Mic className="w-3 h-3 text-emerald-400" />
+                      <span
+                        className="w-1.5 h-2.5 bg-emerald-400 rounded-full transition-all duration-75"
+                        style={{ opacity: audioLevel > 5 ? 1 : 0.4 }}
+                      />
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 border-l border-white/20 pl-2 text-amber-400" title="Microphone is not recording voice">
+                      <MicOff className="w-3 h-3 text-amber-400" />
+                      <span className="text-[9px] font-mono uppercase text-amber-300">No Mic</span>
+                    </span>
+                  )}
                 </div>
               )}
               {recordingStatus === 'PAUSED' && (
@@ -947,7 +1176,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
           )}
 
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            {/* Left: Device Toggles */}
+            {/* Left: Device Toggles (Camera & Microphone) */}
             <div className="flex items-center gap-1.5">
               {cameraActive ? (
                 <button
@@ -967,6 +1196,52 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   <Video className="w-4 h-4" />
                 </button>
               )}
+
+              {/* Microphone Toggle & Real-time VU Voice Meter */}
+              <button
+                type="button"
+                onClick={toggleMicrophone}
+                disabled={recordingStatus === 'RECORDING' || recordingStatus === 'COUNTDOWN'}
+                className={`p-1.5 rounded-md transition-colors flex items-center gap-1.5 text-xs font-semibold disabled:opacity-40 ${
+                  !micActive
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30'
+                    : micMuted
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30'
+                    : 'bg-slate-800 text-emerald-400 hover:text-emerald-300 hover:bg-slate-700'
+                }`}
+                title={
+                  !micActive
+                    ? 'Microphone is inactive — click to enable'
+                    : micMuted
+                    ? 'Microphone is muted — click to unmute'
+                    : 'Microphone is active & recording voice'
+                }
+              >
+                {!micActive || micMuted ? (
+                  <MicOff className="w-4 h-4" />
+                ) : (
+                  <Mic className="w-4 h-4 text-emerald-400" />
+                )}
+                {micActive && !micMuted && (
+                  <span className="flex items-center gap-1">
+                    <span
+                      className="w-1.5 rounded-full bg-emerald-400 transition-all duration-75"
+                      style={{
+                        height: `${Math.max(6, Math.min(16, 6 + (audioLevel / 100) * 10))}px`,
+                        opacity: audioLevel > 5 ? 1 : 0.4
+                      }}
+                    />
+                    <span className="text-[10px] font-mono text-emerald-400 hidden sm:inline">
+                      {audioLevel > 5 ? 'Voice ON' : 'Mic ON'}
+                    </span>
+                  </span>
+                )}
+                {!micActive && (
+                  <span className="text-[10px] font-mono text-red-400 hidden sm:inline">
+                    Enable Mic
+                  </span>
+                )}
+              </button>
             </div>
 
             {/* Center: Recording Action Controls */}
