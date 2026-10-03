@@ -155,6 +155,13 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       });
       setStream(null);
     }
+
+    // CRITICAL: detach srcObject from the video element so the browser
+    // releases the camera hardware (turns off the camera light)
+    if (liveVideoRef.current) {
+      liveVideoRef.current.srcObject = null;
+    }
+
     setCameraActive(false);
     setMicActive(false);
   };
@@ -316,7 +323,8 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   };
 
   useEffect(() => {
-    startCamera();
+    // Camera is NOT started automatically — user must click "Enable Camera" explicitly.
+    // This prevents the camera indicator light from turning on just by navigating to this tab.
     return () => {
       stopCamera();
       if (recordedUrl) URL.revokeObjectURL(recordedUrl);
@@ -326,10 +334,11 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     };
   }, []);
 
-  // Set stream when video element binds
+  // Set or clear srcObject when stream changes
   useEffect(() => {
-    if (liveVideoRef.current && stream) {
-      liveVideoRef.current.srcObject = stream;
+    if (liveVideoRef.current) {
+      // Assign the new stream, or clear it to null to fully release camera hardware
+      liveVideoRef.current.srcObject = stream || null;
     }
   }, [cameraActive, recordingStatus, stream]);
 

@@ -107,7 +107,16 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
   const [activeAudioDuration, setActiveAudioDuration] = useState(0);
   const [isFetchingFresh, setIsFetchingFresh] = useState(false);
 
+  // Ref to track current noteCards length without creating a stale closure dependency
+  const noteCardsLengthRef = useRef(0);
+  useEffect(() => {
+    noteCardsLengthRef.current = noteCards.length;
+  }, [noteCards.length]);
+
   // Active sync function to pull latest reviews & noteCards from MongoDB
+  // NOTE: Only depends on dateFolder — uses ref to read noteCards.length to avoid
+  // recreating the callback on every note update (which would cause the mount useEffect
+  // to re-run and overwrite freshly-fetched data with stale initialNoteCards props).
   const fetchLatestData = useCallback(async (silent = false) => {
     if (!dateFolder) return;
     if (!silent) setIsFetchingFresh(true);
@@ -121,9 +130,9 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
           if (Array.isArray(folderData.reviews)) {
             setReviews(folderData.reviews);
           }
-          if (Array.isArray(folderData.noteCards)) {
+          if (Array.isArray(folderData.noteCards) && folderData.noteCards.length > 0) {
             setNoteCards(folderData.noteCards);
-          } else if (folderData.notes?.content && noteCards.length === 0) {
+          } else if (folderData.notes?.content && noteCardsLengthRef.current === 0) {
             setNoteCards([{
               id: 'note-initial',
               title: 'Initial Practice Note',
@@ -144,9 +153,10 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
       if (Array.isArray(data.reviews)) {
         setReviews(data.reviews);
       }
-      if (Array.isArray(data.noteCards)) {
+      if (Array.isArray(data.noteCards) && data.noteCards.length > 0) {
+        // Always update from server — this ensures notes from all authors are visible
         setNoteCards(data.noteCards);
-      } else if (data.notes?.content && noteCards.length === 0) {
+      } else if (data.notes?.content && noteCardsLengthRef.current === 0) {
         setNoteCards([{
           id: 'note-initial',
           title: 'Initial Practice Note',
@@ -165,9 +175,12 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
     } finally {
       if (!silent) setIsFetchingFresh(false);
     }
-  }, [dateFolder, noteCards.length]);
+  }, [dateFolder]); // ← Only dateFolder as dep; noteCards.length read via ref to prevent infinite cascade
 
-  // Synchronize on mount and when dateFolder changes
+  // Synchronize on mount and when dateFolder/initial props change
+  // NOTE: fetchLatestData is intentionally excluded from deps — it is stable (only changes
+  // when dateFolder changes, same as this effect). Including it would cause the effect to
+  // re-run after every fetch (since noteCards.length changed), resetting state to stale props.
   useEffect(() => {
     if (Array.isArray(initialNoteCards) && initialNoteCards.length > 0) {
       setNoteCards(initialNoteCards);
@@ -197,15 +210,16 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
       setLastSavedTime(new Date(initialNotes.updatedAt));
     }
     setReviews(initialReviews || []);
-    // Fetch latest fresh data immediately from database
+    // Immediately fetch latest data from server on mount/folder-change
     fetchLatestData(true);
-  }, [dateFolder, initialNotes, initialNoteCards, initialReviews, fetchLatestData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFolder, initialNotes, initialNoteCards, initialReviews]); // fetchLatestData excluded intentionally
 
-  // Background auto-sync interval every 12 seconds so distant mentor/candidate reviews appear automatically
+  // Background auto-sync interval every 8 seconds so notes/reviews from all users appear quickly
   useEffect(() => {
     const timer = setInterval(() => {
       fetchLatestData(true);
-    }, 12000);
+    }, 8000);
 
     const onWindowFocus = () => fetchLatestData(true);
     window.addEventListener('focus', onWindowFocus);
