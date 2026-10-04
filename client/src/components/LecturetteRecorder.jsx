@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import fixWebmDuration from 'fix-webm-duration';
 import {
   Video, VideoOff, Mic, MicOff, Play, Pause, Square, RotateCcw,
   Upload, Trash2, CheckCircle2, AlertCircle, AlertTriangle, Calendar, Film, X,
@@ -15,6 +16,28 @@ function formatTime(secs) {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
+// Sub-component: video thumbnail with loading spinner
+function LectureThumbnail({ src }) {
+  const [loaded, setLoaded] = React.useState(false);
+  return (
+    <>
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
+          <div className="w-7 h-7 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+        </div>
+      )}
+      <video
+        src={src}
+        className="w-full h-full object-cover"
+        preload="metadata"
+        onLoadedData={() => setLoaded(true)}
+        onLoadedMetadata={() => setLoaded(true)}
+        onError={() => setLoaded(true)}
+      />
+    </>
+  );
+}
+
 export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const today = new Date().toISOString().split('T')[0];
   const [selectedFolder, setSelectedFolder] = useState(folders[0]?.dateFolder || today);
@@ -23,6 +46,8 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const [editingLecturette, setEditingLecturette] = useState(null); // { id, folderDate, title, recordedDate }
   const [lecEditSaving, setLecEditSaving] = useState(false);
   const [deleteConfirmLec, setDeleteConfirmLec] = useState(null); // { folderDate, id, title }
+  const [retakeConfirmOpen, setRetakeConfirmOpen] = useState(false); // Retake confirmation popup modal
+  const [deletingLecturetteId, setDeletingLecturetteId] = useState(null); // id of video currently being deleted
   const [stream, setStream] = useState(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState('IDLE'); // 'IDLE', 'COUNTDOWN', 'RECORDING', 'PAUSED', 'STOPPED'
@@ -32,6 +57,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const [uploadProgress, setUploadProgress] = useState(null); // 0-100%
   const [uploadSuccess, setUploadSuccess] = useState(null);
   const [uploadSuccessToast, setUploadSuccessToast] = useState(null); // floating toast message
+  const [videoDiscardedToast, setVideoDiscardedToast] = useState(false); // shown when retake aborts an upload
   const [error, setError] = useState(null);
   const [playingVideo, setPlayingVideo] = useState(null); // { url, title, duration }
 
@@ -54,6 +80,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const doubleBellFiredRef = useRef(false);
   const bellIntervalRef = useRef(null);
   const bellToastTimerRef = useRef(null);
+  const uploadXhrRef = useRef(null); // ref to abort ongoing upload if user retakes
 
   // Microphone and Live Sound Detection state
   const [micActive, setMicActive] = useState(false);
@@ -326,8 +353,25 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     // Camera is NOT started automatically — user must click "Enable Camera" explicitly.
     // This prevents the camera indicator light from turning on just by navigating to this tab.
     return () => {
-      stopCamera();
-      if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+      // Use refs directly to avoid stale closure issues with stream state.
+      // This ensures the camera hardware is always released when switching tabs.
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        try { audioContextRef.current.close(); } catch (e) {}
+        audioContextRef.current = null;
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => {
+          try { track.stop(); } catch (e) {}
+        });
+        streamRef.current = null;
+      }
+      if (liveVideoRef.current) {
+        liveVideoRef.current.srcObject = null;
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try { mediaRecorderRef.current.stop(); } catch (e) {}
+      }
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (bellIntervalRef.current) clearInterval(bellIntervalRef.current);
       if (bellToastTimerRef.current) clearTimeout(bellToastTimerRef.current);
@@ -445,12 +489,12 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
 
     try {
-      // Optimize bitrate to 1.2 Mbps video and 128 kbps audio
+      // Optimize bitrate: 600 kbps video + 64 kbps mono audio — sharp speech video, reduces file size by ~40-50% for fast uploads
       const options = {
-        videoBitsPerSecond: 1_200_000
+        videoBitsPerSecond: 600_000
       };
       if (hasAudio) {
-        options.audioBitsPerSecond = 128_000;
+        options.audioBitsPerSecond = 64_000;
       }
       if (selectedMimeType) {
         options.mimeType = selectedMimeType;
@@ -473,15 +517,29 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         }
       };
 
-      mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: mr.mimeType || selectedMimeType || 'video/webm' });
-        setRecordedBlob(blob);
-        const url = URL.createObjectURL(blob);
+      mr.onstop = async () => {
+        const rawBlob = new Blob(chunksRef.current, { type: mr.mimeType || selectedMimeType || 'video/webm' });
+        const durationSec = totalDurationRef.current || Math.round((Date.now() - startTimeRef.current) / 1000) || 1;
+        const durationMs = Math.max(1000, Math.round(durationSec * 1000));
+        let finalBlob = rawBlob;
+
+        // Patch WebM header with exact duration so downloaded video has perfectly synced seeking
+        try {
+          if (rawBlob.type.includes('webm') || !rawBlob.type) {
+            finalBlob = await fixWebmDuration(rawBlob, durationMs, { logger: false });
+          }
+        } catch (fixErr) {
+          console.warn('Could not patch WebM duration header:', fixErr);
+          finalBlob = rawBlob;
+        }
+
+        setRecordedBlob(finalBlob);
+        const url = URL.createObjectURL(finalBlob);
         setRecordedUrl(url);
         setRecordingStatus('STOPPED');
         setIsPlaying(false);
         setCurrentTime(0);
-        setVideoDuration(totalDurationRef.current || 0);
+        setVideoDuration(durationSec);
         if (bellIntervalRef.current) {
           clearInterval(bellIntervalRef.current);
           bellIntervalRef.current = null;
@@ -596,13 +654,16 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     if (!recordedBlob) return;
     try {
       const a = document.createElement('a');
-      const ext = recordedBlob.type.includes('mp4') ? '.mp4' : '.webm';
-      const filename = (recTitle || `lecturette-${recDate || selectedFolder}`).replace(/[^a-zA-Z0-9_-]/g, '_') + ext;
-      a.href = recordedUrl;
+      const ext = recordedBlob.type && recordedBlob.type.includes('mp4') ? '.mp4' : '.webm';
+      const baseName = (recTitle || `lecturette-${recDate || selectedFolder}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = baseName.endsWith('.mp4') || baseName.endsWith('.webm') ? baseName : `${baseName}${ext}`;
+      const dlUrl = URL.createObjectURL(recordedBlob);
+      a.href = dlUrl;
       a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(dlUrl), 5000);
     } catch (e) {
       console.warn('Download error:', e);
     }
@@ -615,10 +676,13 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       if (dlUrl.includes('cloudinary.com') && dlUrl.includes('/upload/')) {
         dlUrl = dlUrl.replace('/upload/', '/upload/fl_attachment/');
       }
+      const ext = url.includes('.mp4') ? '.mp4' : '.webm';
+      const baseName = (title || 'lecturette-video').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = baseName.endsWith('.mp4') || baseName.endsWith('.webm') ? baseName : `${baseName}${ext}`;
       const a = document.createElement('a');
       a.href = dlUrl;
       a.target = '_blank';
-      a.download = (title || 'lecturette-video').replace(/[^a-zA-Z0-9_-]/g, '_');
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -712,8 +776,49 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
   };
 
-  // Discard & retake
+  // Discard & retake confirmation click — opens custom popup modal instead of browser alert
   const handleRetake = () => {
+    // If there is an active recording, paused session, an ongoing upload, or a recorded blob, show the custom confirmation popup
+    if (
+      recordingStatus === 'RECORDING' ||
+      recordingStatus === 'PAUSED' ||
+      uploadXhrRef.current ||
+      uploading ||
+      recordedBlob
+    ) {
+      setRetakeConfirmOpen(true);
+    } else {
+      executeRetake();
+    }
+  };
+
+  // Perform actual discard & retake reset cleanly
+  const executeRetake = () => {
+    setRetakeConfirmOpen(false);
+
+    // Check if there was an active upload being aborted — show discarded toast in that case
+    const wasUploading = Boolean(uploadXhrRef.current || uploading);
+
+    // Abort active upload if in progress
+    if (uploadXhrRef.current) {
+      try { uploadXhrRef.current.abort(); } catch (e) {}
+      uploadXhrRef.current = null;
+    }
+    setUploading(false);
+    setUploadProgress(null);
+
+    // If an upload was aborted, show a "video discarded" toast (not the success toast)
+    if (wasUploading) {
+      setUploadSuccessToast(null); // ensure success toast is never shown
+      setVideoDiscardedToast(true);
+      setTimeout(() => setVideoDiscardedToast(false), 4000);
+    }
+
+    // Stop active recorder if running
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch (e) {}
+    }
+
     if (bellIntervalRef.current) {
       clearInterval(bellIntervalRef.current);
       bellIntervalRef.current = null;
@@ -731,9 +836,10 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     singleBellFiredRef.current = false;
     doubleBellFiredRef.current = false;
     if (playbackVideoRef.current) {
-      playbackVideoRef.current.pause();
+      try { playbackVideoRef.current.pause(); } catch (e) {}
     }
     if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+    chunksRef.current = [];
     setRecordedBlob(null);
     setRecordedUrl(null);
     setRecordingStatus('IDLE');
@@ -814,37 +920,130 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     e.target.value = '';
   };
 
-  // Upload to Cloudinary with real-time progress
+  // Direct Cloudinary upload with real-time progress and server fallback
   const handleSaveToCloudinary = async () => {
     if (!recordedBlob) return;
     setUploading(true);
     setUploadProgress(0);
     setError(null);
     try {
-      const fd = new FormData();
+      const targetFolder = (recDate || selectedFolder || folders[0]?.dateFolder || today).trim();
+      const targetTitle = (recTitle || `Lecturette ${targetFolder}`).trim();
+      const durationVal = Math.round(totalDurationRef.current || videoDuration || 0);
+
       let fileToUpload = recordedBlob;
       if (!(recordedBlob instanceof File)) {
         const ext = recordedBlob.type && recordedBlob.type.includes('mp4') ? '.mp4' : '.webm';
         fileToUpload = new File([recordedBlob], `lecturette-${Date.now()}${ext}`, { type: recordedBlob.type || 'video/webm' });
       }
+
+      // Step 1: Direct signed upload to Cloudinary (bypasses server proxy, 3x faster, stores permanently on Cloudinary CDN)
+      let directSuccess = false;
+      try {
+        const sigRes = await fetch(apiUrl('/api/cloudinary-signature?folder=ssb-psych-prep/lecturettes'));
+        if (sigRes.ok) {
+          const sigData = await sigRes.json();
+          if (sigData.success && sigData.signature && sigData.apiKey && sigData.cloudName) {
+            const cldFormData = new FormData();
+            cldFormData.append('file', fileToUpload);
+            cldFormData.append('api_key', sigData.apiKey);
+            cldFormData.append('timestamp', sigData.timestamp);
+            cldFormData.append('signature', sigData.signature);
+            cldFormData.append('folder', sigData.folder || 'ssb-psych-prep/lecturettes');
+
+            const cldUpload = await new Promise((resolve, reject) => {
+              const xhr = new XMLHttpRequest();
+              uploadXhrRef.current = xhr;
+              xhr.timeout = 300000; // 5 min timeout
+              xhr.open('POST', `https://api.cloudinary.com/v1_1/${sigData.cloudName}/video/upload`);
+              xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable && e.total > 0) {
+                  const pct = Math.min(99, Math.round((e.loaded / e.total) * 100));
+                  setUploadProgress(pct);
+                }
+              };
+              xhr.onload = () => {
+                uploadXhrRef.current = null;
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  try {
+                    resolve(JSON.parse(xhr.responseText));
+                  } catch {
+                    resolve({});
+                  }
+                } else {
+                  reject(new Error(`Cloudinary HTTP ${xhr.status}`));
+                }
+              };
+              xhr.onerror = () => {
+                uploadXhrRef.current = null;
+                reject(new Error('Cloudinary direct network error'));
+              };
+              xhr.ontimeout = () => {
+                uploadXhrRef.current = null;
+                reject(new Error('Cloudinary direct upload timed out'));
+              };
+              xhr.onabort = () => {
+                uploadXhrRef.current = null;
+                reject(new Error('Upload cancelled'));
+              };
+              xhr.send(cldFormData);
+            });
+
+            if (cldUpload && cldUpload.secure_url) {
+              setUploadProgress(100);
+              // Save metadata in MongoDB via fast lightweight JSON POST
+              const saveRes = await fetch(apiUrl(`/api/folders/${encodeURIComponent(targetFolder)}/lecturette`), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  url: cldUpload.secure_url,
+                  publicId: cldUpload.public_id,
+                  title: targetTitle,
+                  recordedDate: targetFolder,
+                  duration: Math.round(cldUpload.duration) || durationVal
+                })
+              });
+
+              if (!saveRes.ok) {
+                const errData = await saveRes.json().catch(() => ({}));
+                throw new Error(errData.error || 'Failed to save lecturette record');
+              }
+
+              directSuccess = true;
+              setUploadSuccess(`Lecturette "${targetTitle}" saved to Cloudinary successfully!`);
+              setUploadSuccessToast(`✓ Lecturette "${targetTitle}" uploaded and stored on Cloudinary!`);
+              setTimeout(() => setUploadSuccessToast(null), 5000);
+              if (onRefresh) onRefresh();
+              return;
+            }
+          }
+        }
+      } catch (directErr) {
+        console.warn('Direct Cloudinary upload notice (falling back to server upload):', directErr.message);
+      }
+
+      // Step 2: Fallback to server-side upload if direct Cloudinary upload was not possible
+      const fd = new FormData();
       fd.append('video', fileToUpload);
-      const targetFolder = (recDate || selectedFolder || folders[0]?.dateFolder || today).trim();
-      const targetTitle = (recTitle || `Lecturette ${targetFolder}`).trim();
       fd.append('title', targetTitle);
       fd.append('recordedDate', targetFolder);
-      fd.append('duration', (totalDurationRef.current || videoDuration || 0).toString());
+      fd.append('duration', durationVal.toString());
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
+        uploadXhrRef.current = xhr;
+        xhr.timeout = 240000;
         xhr.open('POST', apiUrl(`/api/folders/${encodeURIComponent(targetFolder)}/lecturette`));
         xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const pct = Math.round((e.loaded / e.total) * 100);
+          if (e.lengthComputable && e.total > 0) {
+            const pct = Math.min(99, Math.round((e.loaded / e.total) * 100));
             setUploadProgress(pct);
           }
         };
         xhr.onload = () => {
+          uploadXhrRef.current = null;
           if (xhr.status >= 200 && xhr.status < 300) {
+            setUploadProgress(100);
             try {
               resolve(JSON.parse(xhr.responseText));
             } catch {
@@ -859,7 +1058,9 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
             }
           }
         };
-        xhr.onerror = () => reject(new Error('Network error while uploading video'));
+        xhr.onerror = () => { uploadXhrRef.current = null; reject(new Error('Network error while uploading video')); };
+        xhr.ontimeout = () => { uploadXhrRef.current = null; reject(new Error('Upload timed out after 4 minutes')); };
+        xhr.onabort = () => { uploadXhrRef.current = null; reject(new Error('Upload cancelled')); };
         xhr.send(fd);
       });
 
@@ -899,6 +1100,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
 
   // Delete lecturette from folder
   const executeDeleteLecturette = async (folderDate, lecturetteId) => {
+    setDeletingLecturetteId(lecturetteId);
     try {
       const idToUse = lecturetteId;
       if (!idToUse) throw new Error('No lecturette specified');
@@ -919,6 +1121,8 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       if (onRefresh) onRefresh();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setDeletingLecturetteId(null);
     }
   };
 
@@ -945,6 +1149,16 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         </div>
       )}
 
+      {/* Floating Video Discarded Toast (shown when retake aborts an active upload) */}
+      {videoDiscardedToast && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] animate-fadeIn pointer-events-none">
+          <div className="flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-2xl border border-amber-500/40 bg-amber-600 text-white text-sm font-semibold max-w-sm">
+            <AlertTriangle className="w-5 h-5 shrink-0 text-amber-200" />
+            <span className="leading-snug">Video discarded — upload cancelled.</span>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-dark-700 pb-4">
         <div>
@@ -959,7 +1173,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
           </p>
         </div>
 
-        {/* Target Folder Selector & Upload Button */}
+        {/* Target Folder Selector */}
         <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
           <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 shrink-0">
             Save to Folder:
@@ -978,16 +1192,6 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
               <option value={today}>{today} (Today)</option>
             )}
           </select>
-
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="btn-secondary bg-purple-600/10 text-purple-600 dark:text-purple-400 hover:bg-purple-600/20 border-purple-500/30 text-xs py-1 px-3 flex items-center gap-1.5 transition-colors shadow-sm shrink-0"
-            title="Upload a lecturette video file from your device"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span>Upload Video</span>
-          </button>
         </div>
       </div>
 
@@ -1016,7 +1220,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
             <span>{uploadSuccess}</span>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={handleRetake} className="btn-secondary text-[11px] py-0.5">
+            <button onClick={executeRetake} className="btn-secondary text-[11px] py-0.5">
               Record Another
             </button>
             <button
@@ -1054,13 +1258,6 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   <div className="flex items-center gap-2">
                     <button onClick={startCamera} className="btn-primary text-xs flex items-center gap-1.5">
                       <Video className="w-3.5 h-3.5" /> Enable Camera
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="btn-secondary bg-slate-800 hover:bg-slate-700 text-purple-300 border-slate-700 text-xs flex items-center gap-1.5 shadow"
-                    >
-                      <Upload className="w-3.5 h-3.5 text-purple-400" /> Upload Video
                     </button>
                   </div>
                 </div>
@@ -1286,16 +1483,6 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                     <span className="w-2.5 h-2.5 rounded-full bg-white" />
                     <span>Start Recording</span>
                   </button>
-
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="btn-secondary bg-purple-600/20 text-purple-300 hover:bg-purple-600/30 border-purple-500/40 px-3.5 py-1.5 text-xs flex items-center gap-1.5 transition-colors"
-                    title="Upload an already recorded lecturette video"
-                  >
-                    <Upload className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Upload Lecturette Video</span>
-                  </button>
                 </div>
               )}
 
@@ -1372,7 +1559,9 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                     <Upload className="w-3 h-3" />
                     <span>
                       {uploading
-                        ? (uploadProgress !== null ? `Uploading (${uploadProgress}%)...` : 'Saving...')
+                        ? (uploadProgress !== null
+                            ? (uploadProgress >= 100 ? 'Saving video...' : `Uploading (${uploadProgress}%)...`)
+                            : 'Saving...')
                         : 'Upload & Save Video'}
                     </span>
                   </button>
@@ -1408,11 +1597,19 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                 key={lecId}
                 className="card p-3 space-y-2 relative group hover:border-purple-500/40 transition-colors"
               >
+                {/* Loader Overlay when being deleted */}
+                {deletingLecturetteId === lecId && (
+                  <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm rounded-lg flex flex-col items-center justify-center gap-2 z-30 animate-fadeIn select-none">
+                    <div className="w-8 h-8 border-3 border-red-500/30 border-t-red-500 rounded-full animate-spin" />
+                    <span className="text-xs font-semibold text-red-400">Deleting video...</span>
+                  </div>
+                )}
                 <div
                   onClick={() => setPlayingVideo(lec)}
                   className="aspect-video bg-black rounded-md overflow-hidden relative cursor-pointer flex items-center justify-center group-hover:opacity-90"
                 >
-                  <video src={apiUrl(lec.url)} className="w-full h-full object-cover" />
+                  {/* Video thumbnail with loading spinner */}
+                  <LectureThumbnail src={apiUrl(lec.url)} />
                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
                     <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
                       <Play className="w-4 h-4 fill-current" />
@@ -1601,6 +1798,55 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 Delete Video
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Retake Confirmation Modal Popup (replaces native browser alert/confirm) */}
+      {retakeConfirmOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
+          onClick={() => setRetakeConfirmOpen(false)}
+        >
+          <div
+            className="card max-w-sm w-full p-5 space-y-4 shadow-2xl border border-slate-200 dark:border-dark-600 bg-white dark:bg-dark-850"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-500/10 dark:bg-amber-500/20 flex items-center justify-center text-amber-500 shrink-0">
+                <RotateCcw className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-slate-800 dark:text-white">Discard & Retake?</h3>
+                <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                  {uploading ? 'Upload in progress' : 'Current recording will be lost'}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              {uploading
+                ? 'The current video recording will be discarded, and the ongoing upload will be cancelled. Are you sure you want to retake?'
+                : 'The current video recording will be discarded and cannot be recovered. Are you sure you want to retake and record a new lecturette?'}
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-dark-700">
+              <button
+                type="button"
+                onClick={() => setRetakeConfirmOpen(false)}
+                className="btn-secondary text-xs py-1.5 px-3"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={executeRetake}
+                className="btn-primary bg-amber-600 hover:bg-amber-500 text-white text-xs py-1.5 px-3 flex items-center gap-1.5 shadow-sm"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Yes, Retake</span>
               </button>
             </div>
           </div>

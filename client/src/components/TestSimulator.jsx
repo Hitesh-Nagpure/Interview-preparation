@@ -21,6 +21,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
   const [tatPhase, setTatPhase] = useState('OBSERVE');
   const [timeLeft, setTimeLeft] = useState(0);
   const [totalPhaseDuration, setTotalPhaseDuration] = useState(0);
+  const timeLeftRef = useRef(0); // always-fresh copy of timeLeft for the stable timer interval
   const [responses, setResponses] = useState({});
   const [paperMode, setPaperMode] = useState(() => {
     try { const v = localStorage.getItem('ssb_paper_mode'); return v === null ? true : v === 'true'; } catch { return true; }
@@ -89,27 +90,41 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
     setStatus('RUNNING');
     const dur = testType === 'TAT' ? Math.round(30 / speedMultiplier) : Math.round(15 / speedMultiplier);
     if (testType === 'TAT') setTatPhase('OBSERVE');
+    timeLeftRef.current = dur;
     setTimeLeft(dur);
     setTotalPhaseDuration(dur);
     soundEngine.playTransitionChime();
   };
 
+  // Stable timer: reads timeLeft via ref to avoid stale closures.
+  // Re-creates only when status or speedMultiplier changes — NOT on every word/phase transition.
+  // This prevents the "double-fire" that caused WAT words to flash for ~1 second.
+  const handleAutoTransitionRef = useRef(null);
+  useEffect(() => {
+    handleAutoTransitionRef.current = handleAutoTransition;
+  });
+
   useEffect(() => {
     if (status !== 'RUNNING') return;
     const timer = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) { handleAutoTransition(); return 0; }
-        return prev - 1;
-      });
+      if (timeLeftRef.current <= 1) {
+        timeLeftRef.current = 0;
+        setTimeLeft(0);
+        handleAutoTransitionRef.current();
+      } else {
+        timeLeftRef.current -= 1;
+        setTimeLeft(prev => prev - 1);
+      }
     }, 1000);
     return () => clearInterval(timer);
-  }, [status, tatPhase, currentIndex, items, speedMultiplier]);
+  }, [status]); // Only restart timer when paused/resumed — not on every word change
 
   const handleAutoTransition = () => {
     if (testType === 'TAT') {
       if (tatPhase === 'OBSERVE') {
         setTatPhase('WRITE');
         const dur = Math.round(240 / speedMultiplier);
+        timeLeftRef.current = dur;
         setTimeLeft(dur); setTotalPhaseDuration(dur);
         soundEngine.playTransitionChime();
       } else {
@@ -119,6 +134,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
           setCurrentIndex(i => i + 1);
           setTatPhase('OBSERVE');
           const dur = Math.round(30 / speedMultiplier);
+          timeLeftRef.current = dur;
           setTimeLeft(dur); setTotalPhaseDuration(dur);
         } else {
           finishTest();
@@ -128,6 +144,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
       if (currentIndex + 1 < items.length) {
         setCurrentIndex(i => i + 1);
         const dur = Math.round(15 / speedMultiplier);
+        timeLeftRef.current = dur;
         setTimeLeft(dur); setTotalPhaseDuration(dur);
         soundEngine.playTransitionChime();
       } else { finishTest(); }
@@ -139,6 +156,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
       if (tatPhase === 'OBSERVE') {
         setTatPhase('WRITE');
         const dur = Math.round(240 / speedMultiplier);
+        timeLeftRef.current = dur;
         setTimeLeft(dur); setTotalPhaseDuration(dur);
         soundEngine.playTransitionChime();
       } else {
@@ -148,6 +166,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
           setCurrentIndex(i => i + 1);
           setTatPhase('OBSERVE');
           const dur = Math.round(30 / speedMultiplier);
+          timeLeftRef.current = dur;
           setTimeLeft(dur); setTotalPhaseDuration(dur);
         } else {
           finishTest();
@@ -157,6 +176,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
       if (currentIndex + 1 < items.length) {
         setCurrentIndex(i => i + 1);
         const dur = Math.round(15 / speedMultiplier);
+        timeLeftRef.current = dur;
         setTimeLeft(dur); setTotalPhaseDuration(dur);
         soundEngine.playTransitionChime();
       } else { finishTest(); }

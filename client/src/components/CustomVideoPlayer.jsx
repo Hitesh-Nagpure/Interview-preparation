@@ -26,7 +26,39 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [isBuffering, setIsBuffering] = useState(true);
   const hideControlsTimer = useRef(null);
+  const isSeeking = useRef(false); // prevent onTimeUpdate from overwriting seek position
+  const retryCountRef = useRef(0); // tracks how many times we've retried on error
+
+  // YouTube-like Controls State
+  const [doubleTapFeedback, setDoubleTapFeedback] = useState(null); // { side: 'left'|'right', count: 5, id: number }
+  const [isLongPress2x, setIsLongPress2x] = useState(false);
+
+  // Gesture tracking refs
+  const longPressTimerRef = useRef(null);
+  const isLongPressActiveRef = useRef(false);
+  const wasPlayingBeforeLongPressRef = useRef(false);
+  const lastTapTimeRef = useRef(0);
+  const lastTapSideRef = useRef(null);
+  const singleTapTimerRef = useRef(null);
+  const feedbackTimerRef = useRef(null);
+  const playbackSpeedRef = useRef(playbackSpeed);
+
+  // Keep playbackSpeedRef in sync
+  useEffect(() => {
+    playbackSpeedRef.current = playbackSpeed;
+  }, [playbackSpeed]);
+
+  // Clean up gesture timers on unmount
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+      if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+      if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
+    };
+  }, []);
 
   // Reload video element whenever src changes
   useEffect(() => {
@@ -34,7 +66,12 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     setCurrentTime(0);
     setHasError(false);
     setErrorMessage('');
+    setIsBuffering(true);
+    retryCountRef.current = 0;
     setDuration(fallbackDuration || 0);
+    setIsLongPress2x(false);
+    isLongPressActiveRef.current = false;
+    setDoubleTapFeedback(null);
     if (videoRef.current) {
       videoRef.current.currentTime = 0;
       videoRef.current.load();
@@ -77,6 +114,113 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     }
   };
 
+  const triggerDoubleTapFeedback = (side) => {
+    setDoubleTapFeedback({ side, id: Date.now() });
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => {
+      setDoubleTapFeedback(null);
+    }, 650);
+  };
+
+  // Pointer & Gesture Handlers for YouTube-like controls
+  const handleZonePointerDown = (e, side) => {
+    // Only handle primary mouse button or touch
+    if (e.button !== undefined && e.button !== 0) return;
+    resetHideControls();
+
+    // Clear any previous long press timer
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+
+    // Start 350ms long press timer to trigger 2x speed
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressActiveRef.current = true;
+      setIsLongPress2x(true);
+      const v = videoRef.current;
+      if (v) {
+        wasPlayingBeforeLongPressRef.current = !v.paused && !v.ended;
+        v.playbackRate = 2.0;
+        if (v.paused || v.ended) {
+          v.play().then(() => setIsPlaying(true)).catch(() => {});
+        }
+      }
+    }, 350);
+  };
+
+  const handleZonePointerUp = (e, side) => {
+    if (e.button !== undefined && e.button !== 0) return;
+
+    // Clear long press timer
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+
+    // If long press 2x was active, restore normal speed and pause state
+    if (isLongPressActiveRef.current) {
+      isLongPressActiveRef.current = false;
+      setIsLongPress2x(false);
+      const v = videoRef.current;
+      if (v) {
+        v.playbackRate = playbackSpeedRef.current;
+        if (!wasPlayingBeforeLongPressRef.current) {
+          v.pause();
+          setIsPlaying(false);
+        }
+      }
+      return; // Do NOT trigger single/double tap actions
+    }
+
+    // Handle double-tap vs single-tap
+    const now = Date.now();
+    const timeDiff = now - lastTapTimeRef.current;
+
+    if (timeDiff < 280 && lastTapSideRef.current === side) {
+      // DOUBLE TAP detected!
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      lastTapTimeRef.current = 0;
+
+      if (side === 'left') {
+        handleSkip(-5);
+        triggerDoubleTapFeedback('left');
+      } else {
+        handleSkip(5);
+        triggerDoubleTapFeedback('right');
+      }
+    } else {
+      // First tap — wait for potential second tap
+      lastTapTimeRef.current = now;
+      lastTapSideRef.current = side;
+
+      if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
+      singleTapTimerRef.current = setTimeout(() => {
+        singleTapTimerRef.current = null;
+        togglePlay();
+      }, 280);
+    }
+  };
+
+  const handleZonePointerLeave = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (isLongPressActiveRef.current) {
+      isLongPressActiveRef.current = false;
+      setIsLongPress2x(false);
+      const v = videoRef.current;
+      if (v) {
+        v.playbackRate = playbackSpeedRef.current;
+        if (!wasPlayingBeforeLongPressRef.current) {
+          v.pause();
+          setIsPlaying(false);
+        }
+      }
+    }
+  };
+
   const handleLoadedMetadata = () => {
     const v = videoRef.current;
     if (!v) return;
@@ -103,6 +247,20 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   };
 
   const handleVideoError = () => {
+    const v = videoRef.current;
+    // Auto-retry up to 2 times — handles transient network glitches on Cloudinary/CDN
+    if (retryCountRef.current < 2 && v) {
+      retryCountRef.current += 1;
+      setIsBuffering(true);
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.load();
+          if (autoPlay) videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+        }
+      }, 1200 * retryCountRef.current); // 1.2s, then 2.4s
+      return; // don't show error yet
+    }
+    setIsBuffering(false);
     setHasError(true);
     setErrorMessage('Preview could not be decoded by this browser. The file is preserved and can be downloaded or saved.');
   };
@@ -117,20 +275,28 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
 
   const handleTimeUpdate = () => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v || isSeeking.current) return;
     setCurrentTime(v.currentTime);
     if (v.duration && !isNaN(v.duration) && v.duration !== Infinity && v.duration > 0) {
       setDuration(v.duration);
     }
   };
 
+  // Fires after the browser finishes seeking — confirms actual currentTime
+  const handleSeeked = () => {
+    isSeeking.current = false;
+    const v = videoRef.current;
+    if (v) setCurrentTime(v.currentTime);
+  };
+
   const handleSeek = (e) => {
     const target = parseFloat(e.target.value);
     const v = videoRef.current;
-    if (v) {
-      v.currentTime = target;
-      setCurrentTime(target);
-    }
+    if (!v) return;
+    isSeeking.current = true;
+    setCurrentTime(target); // update UI immediately
+    v.currentTime = target; // request seek
+    // onSeeked will clear isSeeking.current and confirm actual time
   };
 
   const handleSkip = (seconds) => {
@@ -175,31 +341,57 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     }
   };
 
-  const handleDownload = (e) => {
+  const handleDownload = async (e) => {
     e?.stopPropagation?.();
     if (!src) return;
     try {
+      const ext = src.includes('.mp4') ? '.mp4' : '.webm';
+      let safeName = downloadFilename || `lecturette-recording-${Date.now()}`;
+      if (!safeName.endsWith('.mp4') && !safeName.endsWith('.webm')) {
+        safeName += ext;
+      }
+
+      // Local blob / data URLs — direct download, no fetch needed
       if (src.startsWith('blob:') || src.startsWith('data:')) {
         const a = document.createElement('a');
         a.href = src;
-        const ext = src.includes('.mp4') ? '.mp4' : '.webm';
-        a.download = downloadFilename || `lecturette-recording-${Date.now()}${ext}`;
+        a.download = safeName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         return;
       }
+
+      // Build download URL — inject fl_attachment for Cloudinary to force Content-Disposition header
+      const cleanBase = safeName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
       let dlUrl = apiUrl(src);
-      if (src.includes('cloudinary.com') && src.includes('/upload/')) {
-        dlUrl = src.replace('/upload/', '/upload/fl_attachment/');
+      if (dlUrl.includes('cloudinary.com') && dlUrl.includes('/upload/')) {
+        dlUrl = dlUrl.replace('/upload/', `/upload/fl_attachment:${cleanBase}/`);
       }
-      const a = document.createElement('a');
-      a.href = dlUrl;
-      a.target = '_blank';
-      a.download = downloadFilename || `lecturette-recording-${Date.now()}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+
+      // Fetch as blob — bypasses browser cross-origin download restriction
+      try {
+        const res = await fetch(dlUrl);
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob && blob.size > 0) {
+            const blobUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = safeName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+            return;
+          }
+        }
+      } catch (fetchErr) {
+        console.warn('Blob download fallback to direct link:', fetchErr);
+      }
+
+      // Fallback: open in new tab (fl_attachment flag makes Cloudinary serve it as download)
+      window.open(dlUrl, '_blank');
     } catch (err) {
       window.open(apiUrl(src), '_blank');
     }
@@ -215,15 +407,43 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     }
   };
 
-  const maxVal = duration && !isNaN(duration) && duration !== Infinity ? duration : (fallbackDuration || 1);
+  // For the seek bar: use actual duration when available; for Infinity-duration blobs
+  // use the furthest time the video has played so the bar stays meaningful.
+  const maxVal = (duration && !isNaN(duration) && duration !== Infinity && duration > 0)
+    ? duration
+    : (fallbackDuration > 0 ? fallbackDuration : (currentTime > 0 ? currentTime * 1.05 : 0));
   const resolvedSrc = src?.startsWith('blob:') || src?.startsWith('data:') ? src : apiUrl(src);
+
+  const handleKeyDown = (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === ' ' || e.key === 'k' || e.key === 'K') {
+      e.preventDefault();
+      togglePlay();
+    } else if (e.key === 'ArrowLeft' || e.key === 'j' || e.key === 'J') {
+      e.preventDefault();
+      handleSkip(-5);
+      triggerDoubleTapFeedback('left');
+    } else if (e.key === 'ArrowRight' || e.key === 'l' || e.key === 'L') {
+      e.preventDefault();
+      handleSkip(5);
+      triggerDoubleTapFeedback('right');
+    } else if (e.key === 'm' || e.key === 'M') {
+      e.preventDefault();
+      toggleMute();
+    } else if (e.key === 'f' || e.key === 'F') {
+      e.preventDefault();
+      toggleFullscreen();
+    }
+  };
 
   return (
     <div
       ref={containerRef}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
       onMouseMove={resetHideControls}
       onClick={resetHideControls}
-      className={`relative bg-black flex items-center justify-center group overflow-hidden select-none ${className}`}
+      className={`relative bg-black flex items-center justify-center group overflow-hidden select-none outline-none focus:ring-1 focus:ring-blue-500/40 ${className}`}
     >
       <video
         ref={videoRef}
@@ -231,16 +451,27 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
         playsInline
         preload="auto"
         onLoadedMetadata={handleLoadedMetadata}
+        onLoadedData={() => setIsBuffering(false)}
+        onCanPlay={() => setIsBuffering(false)}
+        onWaiting={() => setIsBuffering(true)}
+        onPlaying={() => { setIsBuffering(false); setIsPlaying(true); }}
         onTimeUpdate={handleTimeUpdate}
+        onSeeked={handleSeeked}
         onEnded={() => setIsPlaying(false)}
         onError={handleVideoError}
-        onClick={togglePlay}
-        className={`w-full h-full object-contain cursor-pointer ${hasError ? 'hidden' : 'block'}`}
+        className={`w-full h-full object-contain ${hasError ? 'hidden' : 'block'}`}
       />
+
+      {/* Blue Loading / Buffering Spinner */}
+      {isBuffering && !hasError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none z-20">
+          <div className="w-10 h-10 border-[3px] border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+        </div>
+      )}
 
       {/* Fallback Display if video cannot be decoded in browser */}
       {hasError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center p-4 bg-slate-900 text-center space-y-3 z-10">
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-4 bg-slate-900 text-center space-y-3 z-30">
           <div className="w-12 h-12 rounded-full bg-amber-500/10 text-amber-500 flex items-center justify-center">
             <AlertCircle className="w-6 h-6" />
           </div>
@@ -248,26 +479,94 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
             <h4 className="text-xs font-bold text-slate-200">Video Preview Unavailable</h4>
             <p className="text-[11px] text-slate-400 leading-relaxed">{errorMessage}</p>
           </div>
-          <button
-            type="button"
-            onClick={handleDownload}
-            className="btn-secondary bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 flex items-center gap-1.5 shadow"
-          >
-            <Download className="w-3.5 h-3.5 text-blue-400" />
-            <span>Download & Open in Media Player</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setHasError(false);
+                setIsBuffering(true);
+                retryCountRef.current = 0;
+                if (videoRef.current) {
+                  videoRef.current.load();
+                  videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+                }
+              }}
+              className="btn-secondary bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 flex items-center gap-1.5 shadow text-slate-200"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
+              <span>Retry</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="btn-secondary bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 flex items-center gap-1.5 shadow"
+            >
+              <Download className="w-3.5 h-3.5 text-blue-400" />
+              <span>Download & Open</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* YouTube Gesture Zones: Left (rewind 5s) & Right (fast-forward 5s) + Press & Hold 2x Speed */}
+      {!hasError && (
+        <>
+          <div
+            className="absolute inset-y-0 left-0 w-1/2 z-10 cursor-pointer"
+            onPointerDown={(e) => handleZonePointerDown(e, 'left')}
+            onPointerUp={(e) => handleZonePointerUp(e, 'left')}
+            onPointerLeave={handleZonePointerLeave}
+            onPointerCancel={handleZonePointerLeave}
+          />
+          <div
+            className="absolute inset-y-0 right-0 w-1/2 z-10 cursor-pointer"
+            onPointerDown={(e) => handleZonePointerDown(e, 'right')}
+            onPointerUp={(e) => handleZonePointerUp(e, 'right')}
+            onPointerLeave={handleZonePointerLeave}
+            onPointerCancel={handleZonePointerLeave}
+          />
+        </>
+      )}
+
+      {/* YouTube-like "⚡ 2X SPEED" Pill Indicator (when pressing and holding) */}
+      {isLongPress2x && (
+        <div className="absolute top-4 inset-x-0 flex items-center justify-center z-30 pointer-events-none animate-fadeIn">
+          <div className="flex items-center gap-1.5 bg-black/85 backdrop-blur-md px-4 py-1.5 rounded-full border border-blue-400/50 shadow-2xl text-white font-mono text-xs font-extrabold tracking-wider">
+            <span className="text-amber-400 text-sm animate-pulse"></span>
+            <span className="text-blue-300">2X SPEED</span>
+          </div>
+        </div>
+      )}
+
+      {/* Double Tap -5s Animated Feedback on Left */}
+      {doubleTapFeedback?.side === 'left' && (
+        <div className="absolute inset-y-0 left-0 w-1/2 flex items-center justify-center pointer-events-none z-30 animate-fadeIn">
+          <div className="flex flex-col items-center justify-center w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-blue-600/40 backdrop-blur-md border border-blue-400/50 text-white shadow-2xl scale-100 animate-pulse">
+            <RotateCcw className="w-6 h-6 sm:w-7 sm:h-7 stroke-[2.5]" />
+            <span className="text-xs sm:text-sm font-black font-mono mt-1 tracking-wide">-5 SECONDS</span>
+          </div>
+        </div>
+      )}
+
+      {/* Double Tap +5s Animated Feedback on Right */}
+      {doubleTapFeedback?.side === 'right' && (
+        <div className="absolute inset-y-0 right-0 w-1/2 flex items-center justify-center pointer-events-none z-30 animate-fadeIn">
+          <div className="flex flex-col items-center justify-center w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-blue-600/40 backdrop-blur-md border border-blue-400/50 text-white shadow-2xl scale-100 animate-pulse">
+            <RotateCcw className="w-6 h-6 sm:w-7 sm:h-7 stroke-[2.5] transform -scale-x-100" />
+            <span className="text-xs sm:text-sm font-black font-mono mt-1 tracking-wide">+5 SECONDS</span>
+          </div>
         </div>
       )}
 
       {/* Center Play Overlay when paused — Blue button */}
-      {!isPlaying && !hasError && (
+      {!isPlaying && !hasError && !isLongPress2x && (
         <div
           onClick={togglePlay}
-          className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer transition-opacity z-10"
+          className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer transition-opacity z-10 pointer-events-none"
         >
           <button
             type="button"
-            className="w-16 h-16 rounded-full bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center shadow-2xl transform hover:scale-105 transition-all focus:outline-none ring-4 ring-blue-500/30"
+            className="w-16 h-16 rounded-full bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center shadow-2xl transform hover:scale-105 transition-all focus:outline-none ring-4 ring-blue-500/30 pointer-events-auto"
             title="Play"
           >
             <Play className="w-7 h-7 fill-current translate-x-0.5" />

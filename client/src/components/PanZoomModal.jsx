@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { ZoomIn, ZoomOut, RotateCcw, X, FileText, Compass, Move } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw, X, FileText, Compass, Move, RotateCw } from 'lucide-react';
 
 export default function PanZoomModal({
   isOpen,
@@ -12,15 +12,17 @@ export default function PanZoomModal({
 }) {
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panPos, setPanPos] = useState({ x: 0, y: 0 });
+  const [rotation, setRotation] = useState(0); // in degrees: 0, 90, 180, 270
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const dragMovedRef = useRef(false);
 
-  // Reset zoom and pan when image changes or modal opens
+  // Reset zoom, pan and rotation when image changes or modal opens
   useEffect(() => {
     if (isOpen) {
       setZoomLevel(1);
       setPanPos({ x: 0, y: 0 });
+      setRotation(0);
       dragMovedRef.current = false;
     }
   }, [isOpen, imageUrl]);
@@ -36,9 +38,20 @@ export default function PanZoomModal({
         setZoomLevel(z => Math.min(Number((z + 0.25).toFixed(2)), 5));
       } else if (e.key === '-' || e.key === '_') {
         setZoomLevel(z => Math.max(Number((z - 0.25).toFixed(2)), 0.5));
-      } else if (e.key === '0' || e.key === 'r' || e.key === 'R') {
+      } else if (e.key === '0') {
         setZoomLevel(1);
         setPanPos({ x: 0, y: 0 });
+      } else if (e.key === 'r' || e.key === 'R') {
+        // r / R — reset all (zoom + pan + rotation)
+        setZoomLevel(1);
+        setPanPos({ x: 0, y: 0 });
+        setRotation(0);
+      } else if (e.key === ']') {
+        // ] — rotate clockwise 90°
+        setRotation(r => (r + 90) % 360);
+      } else if (e.key === '[') {
+        // [ — rotate counter-clockwise 90°
+        setRotation(r => (r - 90 + 360) % 360);
       }
     };
 
@@ -96,6 +109,7 @@ export default function PanZoomModal({
     e?.stopPropagation();
     setZoomLevel(1);
     setPanPos({ x: 0, y: 0 });
+    setRotation(0);
   };
 
   // Close when clicking directly on backdrop without having dragged
@@ -152,7 +166,7 @@ export default function PanZoomModal({
           )}
         </div>
 
-        {/* Pan & Zoom Controls */}
+        {/* Pan, Zoom & Rotate Controls */}
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
@@ -179,16 +193,49 @@ export default function PanZoomModal({
             <ZoomIn className="w-4 h-4" />
           </button>
 
-          {/* Reset Zoom Button */}
+          <div className="w-px h-4 bg-slate-700 mx-0.5" />
+
+          {/* Rotate Counter-Clockwise */}
+          <button
+            type="button"
+            onClick={() => setRotation(r => (r - 90 + 360) % 360)}
+            className="p-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+            title="Rotate Counter-Clockwise 90° ([)"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+
+          {rotation !== 0 && (
+            <span
+              className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-xs font-mono font-semibold text-amber-300 min-w-[42px] text-center"
+              title="Current Rotation"
+            >
+              {rotation}°
+            </span>
+          )}
+
+          {/* Rotate Clockwise */}
+          <button
+            type="button"
+            onClick={() => setRotation(r => (r + 90) % 360)}
+            className="p-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+            title="Rotate Clockwise 90° (])"
+          >
+            <RotateCw className="w-4 h-4" />
+          </button>
+
+          <div className="w-px h-4 bg-slate-700 mx-0.5" />
+
+          {/* Reset All (Zoom + Pan + Rotation) */}
           <button
             type="button"
             onClick={resetZoom}
             className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ${
-              zoomLevel !== 1 || panPos.x !== 0 || panPos.y !== 0
+              zoomLevel !== 1 || panPos.x !== 0 || panPos.y !== 0 || rotation !== 0
                 ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-sm ring-1 ring-purple-400/30'
                 : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
             }`}
-            title="Reset Zoom to 100% & Center Position"
+            title="Reset Zoom, Pan & Rotation"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Reset</span>
@@ -226,7 +273,7 @@ export default function PanZoomModal({
       >
         <div
           style={{
-            transform: `translate(${panPos.x}px, ${panPos.y}px) scale(${zoomLevel})`,
+            transform: `translate(${panPos.x}px, ${panPos.y}px) scale(${zoomLevel}) rotate(${rotation}deg)`,
             transformOrigin: 'center center',
             transition: isDragging ? 'none' : 'transform 0.08s ease-out'
           }}
@@ -251,9 +298,11 @@ export default function PanZoomModal({
           <span>Drag to pan</span>
         </span>
         <span>·</span>
-        <span>Scroll wheel to zoom</span>
+        <span>Scroll to zoom</span>
         <span>·</span>
-        <span>Double-click to toggle 2x</span>
+        <span>[ / ] to rotate</span>
+        <span>·</span>
+        <span>Double-click to 2x</span>
         <span>·</span>
         <span>Esc to close</span>
       </div>

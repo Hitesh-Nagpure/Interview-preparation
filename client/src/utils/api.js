@@ -1,4 +1,8 @@
-export const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+const isLocalDev = typeof window !== 'undefined' && 
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
+  window.location.port === '3000';
+
+export const API_BASE = (import.meta.env.VITE_API_URL || (isLocalDev ? 'http://localhost:5000' : '')).replace(/\/+$/, '');
 
 /**
  * Returns full URL for an API path.

@@ -177,27 +177,11 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
     }
   }, [dateFolder]); // ← Only dateFolder as dep; noteCards.length read via ref to prevent infinite cascade
 
-  // Synchronize on mount and when dateFolder/initial props change
-  // NOTE: fetchLatestData is intentionally excluded from deps — it is stable (only changes
-  // when dateFolder changes, same as this effect). Including it would cause the effect to
-  // re-run after every fetch (since noteCards.length changed), resetting state to stale props.
+  // Reset editor state ONLY when the active folder changes (user navigates to a different folder).
+  // Props like initialNotes/initialNoteCards update on every onRefresh() call, so including them
+  // here would wipe the editor every time the user saves or the background sync fires.
   useEffect(() => {
-    if (Array.isArray(initialNoteCards) && initialNoteCards.length > 0) {
-      setNoteCards(initialNoteCards);
-    } else if (initialNotes?.content && initialNotes.content.trim() && initialNotes.content !== '<p><br></p>') {
-      setNoteCards([{
-        id: 'note-initial',
-        title: 'Initial Practice Note',
-        content: initialNotes.content,
-        plainText: initialNotes.plainText || '',
-        author: initialNotes.author || '',
-        createdAt: initialNotes.updatedAt || new Date().toISOString(),
-        updatedAt: initialNotes.updatedAt || new Date().toISOString()
-      }]);
-    } else {
-      setNoteCards([]);
-    }
-
+    // Reset editor draft fields when folder changes
     setEditingNoteId(null);
     setNoteTitle('');
     setContent('');
@@ -206,14 +190,34 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
       editorRef.current.innerHTML = '';
     }
 
+    // Immediately fetch latest data from server on mount/folder-change
+    fetchLatestData(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFolder]); // Only reset on folder change — fetchLatestData excluded intentionally
+
+  // Hydrate noteCards/reviews from props when they arrive/update (e.g. after onRefresh),
+  // but ONLY if the user is not currently editing a note card. This prevents overwriting
+  // an in-progress edit while still keeping the list up-to-date.
+  useEffect(() => {
+    if (Array.isArray(initialNoteCards) && initialNoteCards.length > 0) {
+      setNoteCards(initialNoteCards);
+    } else if (initialNotes?.content && initialNotes.content.trim() && initialNotes.content !== '<p><br></p>') {
+      setNoteCards(prev => prev.length > 0 ? prev : [{
+        id: 'note-initial',
+        title: 'Initial Practice Note',
+        content: initialNotes.content,
+        plainText: initialNotes.plainText || '',
+        author: initialNotes.author || '',
+        createdAt: initialNotes.updatedAt || new Date().toISOString(),
+        updatedAt: initialNotes.updatedAt || new Date().toISOString()
+      }]);
+    }
     if (initialNotes?.updatedAt) {
       setLastSavedTime(new Date(initialNotes.updatedAt));
     }
     setReviews(initialReviews || []);
-    // Immediately fetch latest data from server on mount/folder-change
-    fetchLatestData(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFolder, initialNotes, initialNoteCards, initialReviews]); // fetchLatestData excluded intentionally
+  }, [initialNotes, initialNoteCards, initialReviews]); // Intentionally excludes dateFolder (handled above)
 
   // Background auto-sync interval every 8 seconds so notes/reviews from all users appear quickly
   useEffect(() => {
@@ -1651,19 +1655,24 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
 
                     {/* Card Actions Footer */}
                     <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-dark-700 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => handleEditCard(card)}
-                        className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-colors ${
-                          isEditingThisCard
-                            ? 'bg-amber-500 text-slate-950 font-bold'
-                            : 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20'
-                        }`}
-                        title="Edit this note card"
-                      >
-                        <Edit3 className="w-3 h-3" />
-                        <span>{isEditingThisCard ? 'Editing...' : 'Edit Note'}</span>
-                      </button>
+                      {/* Edit button — only shown to the note's author */}
+                      {isCurrentUser ? (
+                        <button
+                          type="button"
+                          onClick={() => handleEditCard(card)}
+                          className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-colors ${
+                            isEditingThisCard
+                              ? 'bg-amber-500 text-slate-950 font-bold'
+                              : 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20'
+                          }`}
+                          title="Edit this note card"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                          <span>{isEditingThisCard ? 'Editing...' : 'Edit Note'}</span>
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 italic px-1">Read-only</span>
+                      )}
 
                       <div className="flex items-center gap-1">
                         <button
@@ -1689,14 +1698,17 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
                           <Download className="w-3.5 h-3.5" />
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCard(card.id)}
-                          className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-400 hover:text-red-500 transition-colors"
-                          title="Delete note card"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {/* Delete button — only shown to the note's author */}
+                        {isCurrentUser && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCard(card.id)}
+                            className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-400 hover:text-red-500 transition-colors"
+                            title="Delete note card"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

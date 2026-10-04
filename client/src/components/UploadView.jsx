@@ -154,15 +154,17 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
+        xhr.timeout = 180000; // 3 minute timeout
         xhr.open('POST', apiUrl(`/api/folders/${encodeURIComponent(targetFolder)}/lecturette`));
         xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const pct = Math.round((event.loaded / event.total) * 100);
+          if (event.lengthComputable && event.total > 0) {
+            const pct = Math.min(99, Math.round((event.loaded / event.total) * 100));
             setLecProgress(pct);
           }
         };
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) {
+            setLecProgress(100);
             resolve();
           } else {
             try {
@@ -174,6 +176,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
           }
         };
         xhr.onerror = () => reject(new Error('Network error while uploading video'));
+        xhr.ontimeout = () => reject(new Error('Upload timed out after 3 minutes'));
         xhr.send(fd);
       });
 
@@ -1003,7 +1006,7 @@ export default function UploadView({ initialDateFolder, onUploadSuccess, onRefre
               className="bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-md px-4 py-1.5 text-xs flex items-center justify-center gap-1.5 disabled:opacity-40 transition-colors"
             >
               <Upload className="w-3.5 h-3.5" />
-              <span>{lecUploading ? (lecProgress !== null ? `Uploading (${lecProgress}%)...` : 'Saving...') : 'Upload Lecturette Video'}</span>
+              <span>{lecUploading ? (lecProgress !== null ? (lecProgress >= 100 ? 'Saving video...' : `Uploading (${lecProgress}%)...`) : 'Saving...') : 'Upload Lecturette Video'}</span>
             </button>
           </div>
         </form>

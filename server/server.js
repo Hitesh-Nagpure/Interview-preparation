@@ -51,8 +51,14 @@ function uploadBufferToCloudinary(buffer, originalname, folder = 'ssb-psych-prep
     const uploadOptions = {
       folder,
       resource_type: resourceType,
-      timeout: 60000
+      timeout: 120000,       // 2 min (was 1 min) — prevents timeout on slow connections
+      quality: 'auto',       // Cloudinary auto-optimises quality on delivery (no extra encode time)
+      fetch_format: 'auto',  // Serve best format per browser (webp/avif for images)
     };
+    if (resourceType === 'video' || resourceType === 'auto') {
+      // Chunk uploads: pipeline 10MB chunks for faster throughput on large videos
+      uploadOptions.chunk_size = 10_000_000; // 10 MB per chunk
+    }
     if (resourceType === 'video' && !folder.includes('reviews')) {
       uploadOptions.eager_async = true;
     }
@@ -82,6 +88,23 @@ const solutionsDir = path.join(__dirname, '../uploads/solutions');
 if (!fs.existsSync(solutionsDir)) {
   fs.mkdirSync(solutionsDir, { recursive: true });
 }
+
+// ── Dedicated disk streaming storage for video uploads (prevents RAM buffering) ──
+const videoDiskStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname) || '.webm';
+    cb(null, 'lecturette-' + uniqueSuffix + ext);
+  }
+});
+
+const videoDiskUpload = multer({
+  storage: videoDiskStorage,
+  limits: { fileSize: 500 * 1024 * 1024 }
+});
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors());
@@ -180,12 +203,55 @@ async function syncLocalSolutionsToGridFS() {
   }
 }
 
+// Automatically sync any legacy /uploads/ lecturette videos to Cloudinary
+async function syncLocalLecturettesToCloudinary() {
+  if (!cloudinary) return;
+  try {
+    const folders = await DateFolder.find({ 'lecturettes.url': { $regex: '^/uploads/' } });
+    for (const folder of folders) {
+      let modified = false;
+      for (const lec of folder.lecturettes || []) {
+        if (lec.url && lec.url.startsWith('/uploads/')) {
+          const localName = path.basename(lec.url.split('?')[0]);
+          const localPath = path.join(uploadsDir, localName);
+          if (fs.existsSync(localPath)) {
+            try {
+              console.log(`☁️ Syncing local lecturette ${localName} to Cloudinary...`);
+              const result = await cloudinary.uploader.upload_large(localPath, {
+                resource_type: 'video',
+                folder: 'ssb-psych-prep/lecturettes',
+                chunk_size: 6000000,
+                timeout: 300000
+              });
+              if (result?.secure_url) {
+                lec.url = result.secure_url;
+                lec.publicId = result.public_id;
+                modified = true;
+                console.log(`✅ Local lecturette synced to Cloudinary: ${result.secure_url}`);
+              }
+            } catch (err) {
+              console.warn(`Sync legacy lecturette ${localName} warning:`, err.message);
+            }
+          }
+        }
+      }
+      if (modified) {
+        folder.markModified('lecturettes');
+        await folder.save();
+      }
+    }
+  } catch (err) {
+    console.warn('Sync lecturettes to Cloudinary warning:', err.message);
+  }
+}
+
 mongoose
   .connect(MONGO_URI)
   .then(() => {
     console.log('✅ Connected to MongoDB Atlas: ssb_psych_prep');
     getGfsBucket();
     syncLocalSolutionsToGridFS();
+    syncLocalLecturettesToCloudinary();
     seedInitialDataIfEmpty();
   })
   .catch((err) => {
@@ -271,6 +337,32 @@ app.get('/api/health', (req, res) => {
     storageMode: cloudinary ? 'cloudinary' : 'disk',
     time: new Date().toISOString()
   });
+});
+
+// 1b. Cloudinary Upload Signature (for direct, accelerated client-to-Cloudinary upload)
+app.get('/api/cloudinary-signature', (req, res) => {
+  try {
+    if (!cloudinary || !CLOUD_NAME || !CLOUD_API_KEY || !CLOUD_API_SECRET) {
+      return res.status(503).json({ success: false, message: 'Cloudinary not configured' });
+    }
+    const timestamp = Math.round(new Date().getTime() / 1000);
+    const folder = req.query.folder || 'ssb-psych-prep/lecturettes';
+    const paramsToSign = {
+      folder,
+      timestamp
+    };
+    const signature = cloudinary.utils.api_sign_request(paramsToSign, CLOUD_API_SECRET);
+    res.json({
+      success: true,
+      signature,
+      timestamp,
+      apiKey: CLOUD_API_KEY,
+      cloudName: CLOUD_NAME,
+      folder
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 2. Get all Date Folders
@@ -1403,10 +1495,14 @@ app.delete('/api/folders/:dateFolder/solutions/:solutionId', async (req, res) =>
   }
 });
 
-// 14. Upload live lecturette video — ultra-fast immediate response + background Cloudinary sync
+// 14. Upload live lecturette video — supports direct Cloudinary URL saving and server upload fallback
 app.post('/api/folders/:dateFolder/lecturette',
   (req, res, next) => {
-    memoryUpload.single('video')(req, res, (err) => {
+    const contentType = req.headers['content-type'] || '';
+    if (contentType.includes('application/json')) {
+      return next();
+    }
+    videoDiskUpload.single('video')(req, res, (err) => {
       if (err) return res.status(400).json({ error: `Upload error: ${err.message}` });
       next();
     });
@@ -1414,54 +1510,109 @@ app.post('/api/folders/:dateFolder/lecturette',
   async (req, res) => {
     try {
       const { dateFolder } = req.params;
-      const { title, duration } = req.body;
-      if (!req.file) return res.status(400).json({ error: 'Video file is required' });
+      const { title, duration, url, publicId, recordedDate } = req.body;
 
-      let folder = await DateFolder.findOne({ dateFolder });
-      if (!folder) {
-        folder = new DateFolder({
-          dateFolder,
-          folderTitle: `Batch ${dateFolder}`,
-          tat: { pictures: [] },
-          wat: { words: [] },
-          solutions: [],
-          lecturettes: []
+      // Case A: Video already uploaded directly to Cloudinary by client (fastest & stored on Cloudinary CDN)
+      if (url && (url.includes('cloudinary.com') || url.startsWith('http'))) {
+        const newLecId = 'lec-' + Date.now();
+        const newLecturette = {
+          id: newLecId,
+          title: (title || `Lecturette ${dateFolder}`).trim(),
+          recordedDate: recordedDate || dateFolder,
+          duration: Number(duration) || 0,
+          url: url,
+          publicId: publicId || ('lec-' + Date.now()),
+          recordedAt: new Date()
+        };
+
+        const folder = await DateFolder.findOneAndUpdate(
+          { dateFolder },
+          {
+            $setOnInsert: {
+              dateFolder,
+              folderTitle: `Batch ${dateFolder}`,
+              tat: { pictures: [] },
+              wat: { words: [] },
+              solutions: []
+            },
+            $push: {
+              lecturettes: {
+                $each: [newLecturette],
+                $position: 0
+              }
+            }
+          },
+          { upsert: true, new: true }
+        );
+
+        return res.json({
+          success: true,
+          message: 'Lecturette video stored on Cloudinary successfully',
+          lecturette: newLecturette,
+          folder
         });
       }
 
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-      const ext = path.extname(req.file.originalname) || '.webm';
-      const filename = 'lecturette-' + uniqueSuffix + ext;
-      const localFilePath = path.join(uploadsDir, filename);
+      // Case B: Video file uploaded to server via multipart/form-data
+      if (!req.file) return res.status(400).json({ error: 'Video file or video URL is required' });
 
-      // 1. Instantly write to local disk (takes < 20ms)
-      fs.writeFileSync(localFilePath, req.file.buffer);
-      const localUrl = `/uploads/${filename}`;
+      const filename = req.file.filename;
+      const localFilePath = req.file.path;
+      let finalUrl = `/uploads/${filename}`;
+      let finalPublicId = filename;
       const newLecId = 'lec-' + Date.now();
+
+      // If Cloudinary is configured, upload to Cloudinary so it is stored permanently on Cloudinary
+      if (cloudinary) {
+        try {
+          console.log(`⚡ Uploading video ${filename} (${(req.file.size / (1024 * 1024)).toFixed(1)} MB) to Cloudinary...`);
+          const result = await cloudinary.uploader.upload_large(localFilePath, {
+            resource_type: 'video',
+            folder: 'ssb-psych-prep/lecturettes',
+            chunk_size: 6000000,
+            timeout: 300000
+          });
+          if (result?.secure_url) {
+            finalUrl = result.secure_url;
+            finalPublicId = result.public_id;
+            console.log(`☁️ Cloudinary video upload success: ${result.secure_url}`);
+          }
+        } catch (cldErr) {
+          console.warn(`Cloudinary upload warning for ${filename}:`, cldErr.message);
+        }
+      }
 
       const newLecturette = {
         id: newLecId,
         title: (title || `Lecturette ${dateFolder}`).trim(),
         recordedDate: req.body.recordedDate || dateFolder,
         duration: Number(duration) || 0,
-        url: localUrl,
-        publicId: filename,
+        url: finalUrl,
+        publicId: finalPublicId,
         recordedAt: new Date()
       };
 
-      if (!folder.lecturettes) folder.lecturettes = [];
-      folder.lecturettes.unshift(newLecturette);
-      await folder.save();
+      // Atomic push — eliminates Mongoose VersionError and executes instantly
+      const folder = await DateFolder.findOneAndUpdate(
+        { dateFolder },
+        {
+          $setOnInsert: {
+            dateFolder,
+            folderTitle: `Batch ${dateFolder}`,
+            tat: { pictures: [] },
+            wat: { words: [] },
+            solutions: []
+          },
+          $push: {
+            lecturettes: {
+              $each: [newLecturette],
+              $position: 0
+            }
+          }
+        },
+        { upsert: true, new: true }
+      );
 
-      // 2. Also write to GridFS in parallel for permanent cloud DB backup
-      writeBufferToGridFS(filename, req.file.buffer, {
-        lecId: newLecId,
-        dateFolder,
-        originalName: req.file.originalname,
-        contentType: req.file.mimetype || 'video/webm'
-      }).catch(gfsErr => console.warn('GridFS lecturette save warning:', gfsErr.message));
-
-      // 3. Return immediately to the client so upload completes in milliseconds!
       res.json({
         success: true,
         message: 'Lecturette video saved successfully',
@@ -1469,35 +1620,25 @@ app.post('/api/folders/:dateFolder/lecturette',
         folder
       });
 
-      // 4. In background: upload to Cloudinary using fast multi-part chunked upload
-      if (cloudinary) {
-        (async () => {
-          try {
-            console.log(`⚡ Offloading video ${filename} (${(req.file.size / (1024 * 1024)).toFixed(1)} MB) to Cloudinary in background...`);
-            const result = await cloudinary.uploader.upload_large(localFilePath, {
-              resource_type: 'video',
-              folder: 'ssb-psych-prep/lecturettes',
-              chunk_size: 6000000,
-              timeout: 300000
-            });
-            if (result?.secure_url) {
-              const freshFolder = await DateFolder.findOne({ dateFolder });
-              if (freshFolder && freshFolder.lecturettes) {
-                const lecItem = freshFolder.lecturettes.find(l => l.id === newLecId || l.publicId === filename);
-                if (lecItem) {
-                  lecItem.url = result.secure_url;
-                  lecItem.publicId = result.public_id;
-                  freshFolder.markModified('lecturettes');
-                  await freshFolder.save();
-                  console.log(`☁️ Cloudinary video background upload completed: ${result.secure_url}`);
-                }
+      // 2. Also write to GridFS in parallel from file stream as safety backup
+      (async () => {
+        try {
+          const bucket = getGfsBucket();
+          if (bucket && fs.existsSync(localFilePath)) {
+            const uploadStream = bucket.openUploadStream(filename, {
+              contentType: req.file.mimetype || 'video/webm',
+              metadata: {
+                lecId: newLecId,
+                dateFolder,
+                originalName: req.file.originalname
               }
-            }
-          } catch (bgErr) {
-            console.warn(`Cloudinary background video upload warning for ${filename}:`, bgErr.message);
+            });
+            fs.createReadStream(localFilePath).pipe(uploadStream);
           }
-        })();
-      }
+        } catch (gfsErr) {
+          console.warn('GridFS lecturette save warning:', gfsErr.message);
+        }
+      })();
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -1872,6 +2013,33 @@ app.put('/api/folders/:dateFolder/gpes/:gpeId', (req, res, next) => {
     await folder.save();
 
     res.json({ success: true, message: 'GPE updated successfully', gpe, folder });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 20b. PATCH a GPE (JSON-only field updates: title, description, scale, modelSolution)
+app.patch('/api/folders/:dateFolder/gpes/:gpeId', async (req, res) => {
+  try {
+    const { dateFolder, gpeId } = req.params;
+    const { title, description, scale, modelSolution } = req.body;
+
+    const folder = await DateFolder.findOne({ dateFolder });
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+    const gpe = folder.gpes?.find(g => g.id === gpeId || g._id?.toString() === gpeId);
+    if (!gpe) return res.status(404).json({ error: 'GPE exercise not found' });
+
+    if (title !== undefined) gpe.title = title.trim();
+    if (description !== undefined) gpe.description = description.trim();
+    if (scale !== undefined) gpe.scale = scale.trim();
+    if (modelSolution !== undefined) gpe.modelSolution = modelSolution.trim();
+
+    gpe.updatedAt = new Date();
+    folder.markModified('gpes');
+    await folder.save();
+
+    res.json({ success: true, gpe });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -27,6 +27,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
   const [inspectModal, setInspectModal] = useState(null); // { type, dateFolder }
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { type, dateFolder }
   const [deleteResourceConfirm, setDeleteResourceConfirm] = useState(null); // { type: 'solution'|'lecturette', dateFolder, id, label }
+  const [deletingLecturetteId, setDeletingLecturetteId] = useState(null);
   const [bigImage, setBigImage] = useState(null);
 
   // PDF Solutions & Lecturette state
@@ -228,6 +229,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
   };
 
   const handleDeleteLecturette = async (dateFolder, lecturetteId) => {
+    setDeletingLecturetteId(lecturetteId);
     try {
       if (!lecturetteId) throw new Error('No lecturette ID specified');
       let res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder || 'any')}/lecturette/${encodeURIComponent(lecturetteId)}`), {
@@ -246,6 +248,8 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
       if (onRefresh) onRefresh();
     } catch (err) {
       alert(err.message);
+    } finally {
+      setDeletingLecturetteId(null);
     }
   };
 
@@ -888,7 +892,14 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                             {folder.lecturettes.map((lec, idx) => {
                               const lecId = lec.id || lec._id?.toString() || lec._id || `lec-${idx}`;
                               return (
-                              <div key={lecId} className="card-sm p-3 border border-slate-200 dark:border-dark-600 hover:border-purple-500/40 transition-colors space-y-2">
+                              <div key={lecId} className="card-sm p-3 border border-slate-200 dark:border-dark-600 hover:border-purple-500/40 transition-colors space-y-2 relative">
+                                {/* Loader Overlay when being deleted */}
+                                {deletingLecturetteId === lecId && (
+                                  <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm rounded-lg flex flex-col items-center justify-center gap-2 z-30 animate-fadeIn select-none">
+                                    <div className="w-8 h-8 border-3 border-red-500/30 border-t-red-500 rounded-full animate-spin" />
+                                    <span className="text-xs font-semibold text-red-400">Deleting video...</span>
+                                  </div>
+                                )}
                                 {/* Video thumbnail + play */}
                                 <div
                                   onClick={() => setVideoModal({ url: apiUrl(lec.url), title: lec.title })}

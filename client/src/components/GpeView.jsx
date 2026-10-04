@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   Compass, Map, Play, Clock, Plus, Search, Trash2, Eye,
   X, CheckCircle2, FileText, Upload, Calendar, ChevronDown, ChevronUp, ZoomIn,
-  Image as ImageIcon
+  Image as ImageIcon, Edit3, Check
 } from 'lucide-react';
 import { apiUrl } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
@@ -15,6 +15,32 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
   const [expandedSolutions, setExpandedSolutions] = useState({});
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { gpeId, dateFolder, title }
 
+  // Narrative inline edit state
+  const [editNarrativeModal, setEditNarrativeModal] = useState(null); // { gpeId, dateFolder, text }
+  const [editNarrativeSaving, setEditNarrativeSaving] = useState(false);
+  const [editNarrativeError, setEditNarrativeError] = useState(null);
+
+  const handleSaveNarrative = async () => {
+    if (!editNarrativeModal) return;
+    setEditNarrativeSaving(true);
+    setEditNarrativeError(null);
+    try {
+      const { gpeId, dateFolder, text } = editNarrativeModal;
+      const res = await fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}/gpes/${encodeURIComponent(gpeId)}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: text })
+      });
+      if (!res.ok) throw new Error('Failed to update narrative');
+      setEditNarrativeModal(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setEditNarrativeError(err.message);
+    } finally {
+      setEditNarrativeSaving(false);
+    }
+  };
+
   // Upload modal state
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const today = new Date().toISOString().split('T')[0];
@@ -25,8 +51,10 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
   const [modelSolInput, setModelSolInput] = useState('');
   const [mapFile, setMapFile] = useState(null);
   const [mapPreview, setMapPreview] = useState(null);
+  const [mapPreviewRotation, setMapPreviewRotation] = useState(0); // 0, 90, 180, 270
   const [narrativeFile, setNarrativeFile] = useState(null);
   const [narrativePreview, setNarrativePreview] = useState(null);
+  const [narrativePreviewRotation, setNarrativePreviewRotation] = useState(0);
   const [narrativeTab, setNarrativeTab] = useState('text'); // 'text' | 'image'
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
@@ -111,9 +139,11 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
       setMapFile(null);
       if (mapPreview) URL.revokeObjectURL(mapPreview);
       setMapPreview(null);
+      setMapPreviewRotation(0);
       setNarrativeFile(null);
       if (narrativePreview) URL.revokeObjectURL(narrativePreview);
       setNarrativePreview(null);
+      setNarrativePreviewRotation(0);
       setNarrativeTab('text');
       setTitleInput('');
       setDescInput('');
@@ -306,10 +336,17 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                         </div>
                       </div>
                     ) : (
-                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-dark-800 border border-slate-200 dark:border-dark-700 flex flex-col justify-center">
-                        <span className="text-[10px] font-mono text-slate-400 font-bold uppercase">Pasted Narrative</span>
-                        <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-3 leading-relaxed mt-1 font-sans">
-                          {gpe.description || 'No text description'}
+                      <div
+                        onClick={() => setEditNarrativeModal({ gpeId: gpe.id, dateFolder: gpe.dateFolder, text: gpe.description || '' })}
+                        className="p-3 rounded-xl bg-slate-50 dark:bg-dark-800 border border-slate-200 dark:border-dark-700 flex flex-col justify-center relative group/narrative cursor-pointer hover:border-blue-400/60 hover:bg-blue-50/50 dark:hover:bg-blue-500/5 transition-colors"
+                        title="Click to edit narrative"
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] font-mono text-slate-400 font-bold uppercase">Pasted Narrative</span>
+                          <Edit3 className="w-3 h-3 text-slate-300 dark:text-slate-600 group-hover/narrative:text-blue-500 transition-colors" />
+                        </div>
+                        <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-3 leading-relaxed font-sans">
+                          {gpe.description || <span className="italic text-slate-400">No text — click to add narrative</span>}
                         </p>
                       </div>
                     )}
@@ -344,7 +381,7 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                       >
                         <span className="flex items-center gap-1.5">
                           <FileText className="w-3.5 h-3.5 text-emerald-500" />
-                          <span>Candidate Written Plans ({solutionsList.length})</span>
+                          <span>Solutions ({solutionsList.length})</span>
                         </span>
                         {isSolutionsExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                       </button>
@@ -413,26 +450,6 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                     <Play className="w-3.5 h-3.5 fill-current" />
                     <span>Launch GPE Exercise</span>
                   </button>
-
-                  <button
-                    onClick={() => setInspectMap({ url: gpe.mapUrl, title: gpe.title, scale: gpe.scale })}
-                    className="btn-secondary py-2 px-3 text-xs flex items-center gap-1 text-slate-600 dark:text-slate-300"
-                    title="Inspect map image"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>Map</span>
-                  </button>
-
-                  {gpe.narrativeImageUrl && (
-                    <button
-                      onClick={() => setInspectMap({ url: gpe.narrativeImageUrl, title: `${gpe.title} - Narrative Card`, scale: '' })}
-                      className="btn-secondary py-2 px-3 text-xs flex items-center gap-1 text-slate-600 dark:text-slate-300"
-                      title="Inspect narrative card"
-                    >
-                      <ImageIcon className="w-3.5 h-3.5" />
-                      <span>Card</span>
-                    </button>
-                  )}
                 </div>
               </div>
             );
@@ -450,6 +467,60 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
           subtitle={inspectMap.scale}
           badgeIcon={inspectMap.title?.toLowerCase().includes('solution') ? FileText : (inspectMap.title?.toLowerCase().includes('card') ? ImageIcon : Compass)}
         />
+      )}
+
+      {/* Edit Narrative Modal */}
+      {editNarrativeModal && createPortal(
+        <div className="fixed inset-0 z-[125] bg-black/80 flex items-center justify-center p-4">
+          <div className="card max-w-lg w-full p-5 space-y-4 shadow-2xl border border-slate-200 dark:border-dark-600">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-dark-700">
+              <div className="flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-blue-500" />
+                <h3 className="font-bold text-sm text-slate-800 dark:text-white">Edit Narrative Text</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setEditNarrativeModal(null); setEditNarrativeError(null); }}
+                className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {editNarrativeError && (
+              <p className="text-red-500 text-xs font-semibold">{editNarrativeError}</p>
+            )}
+
+            <textarea
+              rows={8}
+              value={editNarrativeModal.text}
+              onChange={e => setEditNarrativeModal(prev => ({ ...prev, text: e.target.value }))}
+              placeholder="Paste or write the full GTO narrative story, tasks, and constraints..."
+              className="input font-sans text-xs leading-relaxed resize-y scrollbar-thin w-full"
+              autoFocus
+            />
+
+            <div className="flex justify-end gap-2 pt-1 border-t border-slate-100 dark:border-dark-700">
+              <button
+                type="button"
+                onClick={() => { setEditNarrativeModal(null); setEditNarrativeError(null); }}
+                className="btn-secondary py-1 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveNarrative}
+                disabled={editNarrativeSaving}
+                className="btn-primary bg-blue-600 hover:bg-blue-500 py-1 text-xs flex items-center gap-1.5 disabled:opacity-40"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{editNarrativeSaving ? 'Saving...' : 'Save Narrative'}</span>
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
 
       {/* Delete Confirmation Modal */}
@@ -559,8 +630,47 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                   className="w-full text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 dark:file:bg-blue-950/40 file:text-blue-700 dark:file:text-blue-300 hover:file:bg-blue-100"
                 />
                 {mapPreview && (
-                  <div className="mt-2 rounded-lg overflow-hidden border border-slate-200 dark:border-dark-700 max-h-40 bg-black/40 flex items-center justify-center p-1">
-                    <img src={mapPreview} alt="" className="max-h-36 w-auto object-contain" />
+                  <div className="mt-2 rounded-lg overflow-hidden border border-slate-200 dark:border-dark-700 bg-black/40">
+                    {/* Rotation controls */}
+                    <div className="flex items-center justify-between px-2 py-1 bg-slate-100 dark:bg-dark-800 border-b border-slate-200 dark:border-dark-700">
+                      <span className="text-[10px] text-slate-400 font-mono">Preview {mapPreviewRotation !== 0 ? `· ${mapPreviewRotation}°` : ''}</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setMapPreviewRotation(r => (r - 90 + 360) % 360)}
+                          className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+                          title="Rotate Counter-Clockwise 90°"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMapPreviewRotation(r => (r + 90) % 360)}
+                          className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+                          title="Rotate Clockwise 90°"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+                        </button>
+                        {mapPreviewRotation !== 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setMapPreviewRotation(0)}
+                            className="text-[10px] px-1.5 py-0.5 rounded text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-500/10 font-semibold transition-colors"
+                            title="Reset rotation"
+                          >
+                            Reset
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="max-h-40 flex items-center justify-center p-1 overflow-hidden">
+                      <img
+                        src={mapPreview}
+                        alt=""
+                        className="max-h-36 w-auto object-contain transition-transform duration-200"
+                        style={{ transform: `rotate(${mapPreviewRotation}deg)` }}
+                      />
+                    </div>
                   </div>
                 )}
               </div>
@@ -600,6 +710,7 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                       onChange={e => {
                         const f = e.target.files?.[0] || null;
                         setNarrativeFile(f);
+                        setNarrativePreviewRotation(0);
                         if (f) {
                           if (narrativePreview) URL.revokeObjectURL(narrativePreview);
                           setNarrativePreview(URL.createObjectURL(f));
@@ -608,14 +719,54 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                       className="w-full text-xs file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 dark:file:bg-blue-950/40 file:text-blue-700 dark:file:text-blue-300 hover:file:bg-blue-100"
                     />
                     {narrativePreview && (
-                      <div className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-dark-700 max-h-40 bg-black/40 flex items-center justify-center">
-                        <img src={narrativePreview} alt="" className="max-h-36 w-auto object-contain" />
+                      <div className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-dark-700 bg-black/40">
+                        {/* Rotation controls */}
+                        <div className="flex items-center justify-between px-2 py-1 bg-slate-100 dark:bg-dark-800 border-b border-slate-200 dark:border-dark-700">
+                          <span className="text-[10px] text-slate-400 font-mono">Preview {narrativePreviewRotation !== 0 ? `· ${narrativePreviewRotation}°` : ''}</span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setNarrativePreviewRotation(r => (r - 90 + 360) % 360)}
+                              className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+                              title="Rotate Counter-Clockwise 90°"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setNarrativePreviewRotation(r => (r + 90) % 360)}
+                              className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+                              title="Rotate Clockwise 90°"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+                            </button>
+                            {narrativePreviewRotation !== 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setNarrativePreviewRotation(0)}
+                                className="text-[10px] px-1.5 py-0.5 rounded text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-500/10 font-semibold transition-colors"
+                                title="Reset rotation"
+                              >
+                                Reset
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="max-h-40 flex items-center justify-center overflow-hidden">
+                          <img
+                            src={narrativePreview}
+                            alt=""
+                            className="max-h-36 w-auto object-contain transition-transform duration-200"
+                            style={{ transform: `rotate(${narrativePreviewRotation}deg)` }}
+                          />
+                        </div>
                         <button
                           type="button"
                           onClick={() => {
                             setNarrativeFile(null);
                             if (narrativePreview) URL.revokeObjectURL(narrativePreview);
                             setNarrativePreview(null);
+                            setNarrativePreviewRotation(0);
                             if (narrativeFileRef.current) narrativeFileRef.current.value = '';
                           }}
                           className="absolute top-2 right-2 p-1 rounded bg-black/70 hover:bg-red-600 text-white transition-colors"
