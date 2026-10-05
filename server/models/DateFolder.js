@@ -56,6 +56,15 @@ const SolutionSchema = new mongoose.Schema({
   cloudinaryUrl: {
     type: String
   },
+  firebaseUrl: {
+    type: String
+  },
+  b2Key: {
+    type: String
+  },
+  b2Url: {
+    type: String
+  },
   localPath: {
     type: String
   },
@@ -92,6 +101,18 @@ const LecturetteSchema = new mongoose.Schema({
   url: {
     type: String,
     required: true
+  },
+  cloudinaryUrl: {
+    type: String
+  },
+  firebaseUrl: {
+    type: String
+  },
+  b2Key: {
+    type: String
+  },
+  b2Url: {
+    type: String
   },
   publicId: {
     type: String

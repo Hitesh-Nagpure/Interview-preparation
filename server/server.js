@@ -45,6 +45,35 @@ if (CLOUD_NAME && CLOUD_API_KEY && CLOUD_API_SECRET) {
   console.log('☁️  Cloudinary configured — uploads will use CDN');
 }
 
+// ── Firebase Storage setup ───────────────────────────────────────────────────
+const {
+  initFirebase,
+  isFirebaseReady,
+  uploadBufferToFirebase,
+  getFirebaseStream,
+  deleteFromFirebase
+} = require('./firebaseStorage');
+
+initFirebase();
+
+// ── Backblaze B2 Storage setup (preferred over Firebase/GridFS) ───────────────
+const {
+  initB2,
+  isB2Ready,
+  uploadBufferToB2,
+  getB2SignedUrl,
+  getB2Stream,
+  deleteFromB2,
+  b2ObjectExists
+} = require('./b2Storage');
+
+initB2();
+
+// Helper: pick best storage backend (B2 → Firebase → GridFS)
+function bestStorageReady() {
+  return isB2Ready() || isFirebaseReady();
+}
+
 // Helper: upload a buffer to Cloudinary, returns the secure_url
 function uploadBufferToCloudinary(buffer, originalname, folder = 'ssb-psych-prep/tat', resourceType = 'auto') {
   return new Promise((resolve, reject) => {
@@ -184,7 +213,42 @@ async function deleteFromGridFS(filenameOrId) {
   }
 }
 
-async function syncLocalSolutionsToGridFS() {
+async function syncLocalSolutionsToStorage() {
+  // Sync local PDFs to B2 (preferred) → Firebase → GridFS
+  if (isB2Ready()) {
+    try {
+      if (!fs.existsSync(solutionsDir)) return;
+      const localFiles = fs.readdirSync(solutionsDir).filter(f => f.endsWith('.pdf'));
+      for (const file of localFiles) {
+        const exists = await b2ObjectExists(`solutions/${file}`);
+        if (!exists) {
+          const fullPath = path.join(solutionsDir, file);
+          const buf = fs.readFileSync(fullPath);
+          await uploadBufferToB2(buf, `solutions/${file}`, 'application/pdf');
+          console.log(`🗂️  Synced ${file} to Backblaze B2`);
+        }
+      }
+    } catch (b2SyncErr) {
+      console.warn('Sync to B2 warning:', b2SyncErr.message);
+    }
+    return;
+  }
+  if (isFirebaseReady()) {
+    try {
+      if (!fs.existsSync(solutionsDir)) return;
+      const localFiles = fs.readdirSync(solutionsDir).filter(f => f.endsWith('.pdf'));
+      for (const file of localFiles) {
+        const fullPath = path.join(solutionsDir, file);
+        const buf = fs.readFileSync(fullPath);
+        await uploadBufferToFirebase(buf, `solutions/${file}`, 'application/pdf');
+        console.log(`🔥 Synced ${file} to Firebase Storage`);
+      }
+    } catch (fbSyncErr) {
+      console.warn('Sync to Firebase warning:', fbSyncErr.message);
+    }
+    return;
+  }
+
   try {
     const bucket = getGfsBucket();
     if (!bucket || !fs.existsSync(solutionsDir)) return;
@@ -250,7 +314,7 @@ mongoose
   .then(() => {
     console.log('✅ Connected to MongoDB Atlas: ssb_psych_prep');
     getGfsBucket();
-    syncLocalSolutionsToGridFS();
+    syncLocalSolutionsToStorage();
     syncLocalLecturettesToCloudinary();
     seedInitialDataIfEmpty();
   })
@@ -335,6 +399,8 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     dbConnected: mongoose.connection.readyState === 1,
     storageMode: cloudinary ? 'cloudinary' : 'disk',
+    firebaseConfigured: isFirebaseReady(),
+    b2Configured: isB2Ready(),
     time: new Date().toISOString()
   });
 });
@@ -1059,11 +1125,17 @@ app.delete('/api/folders/:dateFolder', async (req, res) => {
           await deleteFromGridFS(sol.localPath);
         }
         await deleteFromGridFS(`${sol.id}.pdf`);
+        deleteFromFirebase(`solutions/${sol.localPath || sol.id + '.pdf'}`).catch(() => {});
+        if (sol.b2Key) deleteFromB2(sol.b2Key).catch(() => {});
+        else deleteFromB2(`solutions/${sol.localPath || sol.id + '.pdf'}`).catch(() => {});
       }
     }
     if (folder.lecturettes) {
       for (const lec of folder.lecturettes) {
         await deleteStoredFile(lec.url, lec.publicId, 'video');
+        deleteFromFirebase(`lecturettes/${lec.publicId || path.basename(lec.url)}`).catch(() => {});
+        if (lec.b2Key) deleteFromB2(lec.b2Key).catch(() => {});
+        else deleteFromB2(`lecturettes/${lec.publicId || path.basename(lec.url)}`).catch(() => {});
       }
     }
     if (folder.reviews) {
@@ -1169,13 +1241,36 @@ app.post('/api/folders/:dateFolder/solutions',
       const localFilename = `${solId}.pdf`;
       fs.writeFileSync(path.join(solutionsDir, localFilename), req.file.buffer);
 
-      // 2. Save directly into MongoDB GridFS for 100% reliable persistence
-      writeBufferToGridFS(localFilename, req.file.buffer, {
-        solId,
-        dateFolder,
-        originalName: req.file.originalname,
-        size: req.file.size
-      }).catch(gfsErr => console.warn('GridFS save warning:', gfsErr.message));
+      let firebaseUrl = null;
+      let b2Key = null;
+      let b2Url = null;
+
+      if (isB2Ready()) {
+        try {
+          const b2Res = await uploadBufferToB2(req.file.buffer, `solutions/${localFilename}`, 'application/pdf');
+          b2Key = b2Res.key;
+          b2Url = await getB2SignedUrl(b2Key, 604800);
+          console.log(`🗂️  Solution PDF uploaded to B2: ${b2Key}`);
+        } catch (b2Err) {
+          console.warn('B2 upload warning (solutions):', b2Err.message);
+        }
+      } else if (isFirebaseReady()) {
+        try {
+          const fbRes = await uploadBufferToFirebase(req.file.buffer, `solutions/${localFilename}`, 'application/pdf');
+          firebaseUrl = fbRes.url;
+          console.log(`🔥 Solution PDF uploaded to Firebase: ${firebaseUrl}`);
+        } catch (fbErr) {
+          console.warn('Firebase upload warning:', fbErr.message);
+        }
+      } else {
+        // Fallback to MongoDB GridFS only if no cloud storage is configured
+        writeBufferToGridFS(localFilename, req.file.buffer, {
+          solId,
+          dateFolder,
+          originalName: req.file.originalname,
+          size: req.file.size
+        }).catch(gfsErr => console.warn('GridFS save warning:', gfsErr.message));
+      }
 
       const fileProxyUrl = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solId)}/file`;
 
@@ -1186,6 +1281,9 @@ app.post('/api/folders/:dateFolder/solutions',
         testType: testType || 'TAT',
         url: fileProxyUrl,
         cloudinaryUrl: null,
+        firebaseUrl,
+        b2Key,
+        b2Url,
         localPath: localFilename,
         publicId: localFilename,
         originalName: req.file.originalname,
@@ -1197,7 +1295,7 @@ app.post('/api/folders/:dateFolder/solutions',
       folder.solutions.unshift(newSolution);
       await folder.save();
 
-      // Return response immediately to user — no waiting for slow Cloudinary upload!
+      // Return response immediately to user
       res.json({ success: true, message: 'Solution PDF uploaded', solution: newSolution, folder });
 
       // 3. Background Cloudinary upload if under 10MB (Cloudinary free tier limit)
@@ -1290,6 +1388,54 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
       }
     }
 
+    // 2b. Check Backblaze B2 Storage (preferred)
+    if (solution.b2Key) {
+      if (download) {
+        const dlUrl = await getB2SignedUrl(solution.b2Key, 3600);
+        if (dlUrl) return res.redirect(dlUrl);
+      }
+      const b2St = await getB2Stream(solution.b2Key);
+      if (b2St) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Disposition', disposition);
+        if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        b2St.stream.pipe(res);
+        return;
+      }
+      // If stream failed but we have a signed URL, redirect
+      if (solution.b2Url) return res.redirect(solution.b2Url);
+    }
+    if (isB2Ready()) {
+      const b2Key2 = `solutions/${solution.localPath || `${solution.id}.pdf`}`;
+      const b2St2 = await getB2Stream(b2Key2);
+      if (b2St2) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Disposition', disposition);
+        if (b2St2.contentLength) res.setHeader('Content-Length', b2St2.contentLength);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        b2St2.stream.pipe(res);
+        return;
+      }
+    }
+
+    // 2c. Check Firebase Storage (secondary)
+    if (solution.firebaseUrl) {
+      if (download) return res.redirect(solution.firebaseUrl);
+      const fbStream = await getFirebaseStream(`solutions/${solution.localPath || `${solution.id}.pdf`}`);
+      if (fbStream) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Disposition', disposition);
+        if (fbStream.length) res.setHeader('Content-Length', fbStream.length);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        return fbStream.stream.pipe(res);
+      }
+      return res.redirect(solution.firebaseUrl);
+    }
+
     // 3. Check MongoDB GridFS
     const gfsCandidates = [
       solution.localPath,
@@ -1341,8 +1487,12 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
         solution.localPath = `${solution.id}.pdf`;
         await folder.save();
 
-        // Also save reconstructed PDF to GridFS so it never has to be reconstructed again!
-        writeBufferToGridFS(`${solution.id}.pdf`, Buffer.from(pdfBytes)).catch(() => {});
+        // Also cache reconstructed PDF to B2 so it never has to be reconstructed again
+        if (isB2Ready()) {
+          uploadBufferToB2(Buffer.from(pdfBytes), `solutions/${solution.id}.pdf`, 'application/pdf').catch(() => {});
+        } else {
+          writeBufferToGridFS(`${solution.id}.pdf`, Buffer.from(pdfBytes)).catch(() => {});
+        }
 
         if (download) return res.download(savedPath, filename);
         res.setHeader('Content-Type', 'application/pdf');
@@ -1417,18 +1567,39 @@ app.put('/api/folders/:dateFolder/solutions/:solutionId',
           await deleteFromGridFS(solution.localPath);
         }
         await deleteFromGridFS(`${solution.id}.pdf`);
+        deleteFromFirebase(`solutions/${solution.localPath || `${solution.id}.pdf`}`).catch(() => {});
+        if (solution.b2Key) deleteFromB2(solution.b2Key).catch(() => {});
 
-        // Save new file locally and to GridFS
+        // Save new file locally and to B2/Firebase/GridFS
         const newLocalName = `${solution.id}.pdf`;
         fs.writeFileSync(path.join(solutionsDir, newLocalName), req.file.buffer);
         solution.localPath = newLocalName;
 
-        writeBufferToGridFS(newLocalName, req.file.buffer, {
-          solId: solution.id,
-          dateFolder,
-          originalName: req.file.originalname,
-          size: req.file.size
-        }).catch(gfsErr => console.warn('GridFS save warning:', gfsErr.message));
+        if (isB2Ready()) {
+          try {
+            const b2Res = await uploadBufferToB2(req.file.buffer, `solutions/${newLocalName}`, 'application/pdf');
+            solution.b2Key = b2Res.key;
+            solution.b2Url = await getB2SignedUrl(b2Res.key, 604800);
+            console.log(`🗂️  Updated Solution PDF saved to B2: ${b2Res.key}`);
+          } catch (b2Err) {
+            console.warn('B2 upload warning on edit:', b2Err.message);
+          }
+        } else if (isFirebaseReady()) {
+          try {
+            const fbRes = await uploadBufferToFirebase(req.file.buffer, `solutions/${newLocalName}`, 'application/pdf');
+            solution.firebaseUrl = fbRes.url;
+            console.log(`🔥 Updated Solution PDF saved to Firebase: ${fbRes.url}`);
+          } catch (fbErr) {
+            console.warn('Firebase upload warning on edit:', fbErr.message);
+          }
+        } else {
+          writeBufferToGridFS(newLocalName, req.file.buffer, {
+            solId: solution.id,
+            dateFolder,
+            originalName: req.file.originalname,
+            size: req.file.size
+          }).catch(gfsErr => console.warn('GridFS save warning:', gfsErr.message));
+        }
 
         solution.url = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`;
         solution.originalName = req.file.originalname;
@@ -1483,6 +1654,9 @@ app.delete('/api/folders/:dateFolder/solutions/:solutionId', async (req, res) =>
         await deleteFromGridFS(solution.localPath);
       }
       await deleteFromGridFS(`${solution.id}.pdf`);
+      deleteFromFirebase(`solutions/${solution.localPath || `${solution.id}.pdf`}`).catch(() => {});
+      if (solution.b2Key) deleteFromB2(solution.b2Key).catch(() => {});
+      else deleteFromB2(`solutions/${solution.localPath || `${solution.id}.pdf`}`).catch(() => {});
     }
 
     folder.solutions = (folder.solutions || []).filter(
@@ -1620,38 +1794,107 @@ app.post('/api/folders/:dateFolder/lecturette',
         folder
       });
 
-      // 2. Also write to GridFS in parallel from file stream as safety backup
-      (async () => {
-        try {
-          const bucket = getGfsBucket();
-          if (bucket && fs.existsSync(localFilePath)) {
-            const uploadStream = bucket.openUploadStream(filename, {
-              contentType: req.file.mimetype || 'video/webm',
-              metadata: {
-                lecId: newLecId,
-                dateFolder,
-                originalName: req.file.originalname
+      // 2. Also write to B2 / Firebase / GridFS in background
+      if (isB2Ready()) {
+        (async () => {
+          try {
+            if (fs.existsSync(localFilePath)) {
+              const fileBuf = fs.readFileSync(localFilePath);
+              const b2Res = await uploadBufferToB2(
+                fileBuf,
+                `lecturettes/${filename}`,
+                req.file.mimetype || 'video/webm'
+              );
+              const signedUrl = await getB2SignedUrl(b2Res.key, 604800);
+              console.log(`🗂️  Lecturette video saved to B2: ${b2Res.key}`);
+              const curFolder = await DateFolder.findOne({ dateFolder });
+              if (curFolder && curFolder.lecturettes) {
+                const lec = curFolder.lecturettes.find(l => l.id === newLecId);
+                if (lec) {
+                  lec.b2Key = b2Res.key;
+                  lec.b2Url = signedUrl;
+                  await curFolder.save();
+                }
               }
-            });
-            fs.createReadStream(localFilePath).pipe(uploadStream);
+            }
+          } catch (b2Err) {
+            console.warn('B2 lecturette save warning:', b2Err.message);
           }
-        } catch (gfsErr) {
-          console.warn('GridFS lecturette save warning:', gfsErr.message);
-        }
-      })();
+        })();
+      } else if (isFirebaseReady()) {
+        (async () => {
+          try {
+            if (fs.existsSync(localFilePath)) {
+              const fileBuf = fs.readFileSync(localFilePath);
+              const fbRes = await uploadBufferToFirebase(
+                fileBuf,
+                `lecturettes/${filename}`,
+                req.file.mimetype || 'video/webm'
+              );
+              console.log(`🔥 Lecturette video saved to Firebase: ${fbRes.url}`);
+              const curFolder = await DateFolder.findOne({ dateFolder });
+              if (curFolder && curFolder.lecturettes) {
+                const lec = curFolder.lecturettes.find(l => l.id === newLecId);
+                if (lec) {
+                  lec.firebaseUrl = fbRes.url;
+                  await curFolder.save();
+                }
+              }
+            }
+          } catch (fbErr) {
+            console.warn('Firebase lecturette save warning:', fbErr.message);
+          }
+        })();
+      } else {
+        (async () => {
+          try {
+            const bucket = getGfsBucket();
+            if (bucket && fs.existsSync(localFilePath)) {
+              const uploadStream = bucket.openUploadStream(filename, {
+                contentType: req.file.mimetype || 'video/webm',
+                metadata: { lecId: newLecId, dateFolder, originalName: req.file.originalname }
+              });
+              fs.createReadStream(localFilePath).pipe(uploadStream);
+            }
+          } catch (gfsErr) {
+            console.warn('GridFS lecturette save warning:', gfsErr.message);
+          }
+        })();
+      }
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   }
 );
 
-// Fallback: stream lecturette video from GridFS if local file is missing on ephemeral disk
+// Fallback: stream lecturette video from B2 / Firebase / GridFS if local file is missing on ephemeral disk
 app.get('/uploads/lecturette-:file', async (req, res, next) => {
   const filename = 'lecturette-' + req.params.file;
   const filePath = path.join(uploadsDir, filename);
   if (fs.existsSync(filePath)) {
     return next(); // let express.static serve it with Range support
   }
+  // 1. Try B2 first
+  if (isB2Ready()) {
+    const b2St = await getB2Stream(`lecturettes/${filename}`);
+    if (b2St) {
+      res.setHeader('Content-Type', b2St.contentType || 'video/webm');
+      res.setHeader('Accept-Ranges', 'bytes');
+      if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+      b2St.stream.pipe(res);
+      return;
+    }
+  }
+  // 2. Try Firebase
+  if (isFirebaseReady()) {
+    const fbStream = await getFirebaseStream(`lecturettes/${filename}`);
+    if (fbStream) {
+      res.setHeader('Content-Type', fbStream.contentType || 'video/webm');
+      res.setHeader('Accept-Ranges', 'bytes');
+      return fbStream.stream.pipe(res);
+    }
+  }
+  // 3. Try GridFS
   const streamData = await getGridFSStream(filename);
   if (streamData) {
     res.setHeader('Content-Type', streamData.file?.metadata?.contentType || 'video/webm');
@@ -1684,9 +1927,14 @@ app.delete('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res)
     if (lecturette) {
       await deleteStoredFile(lecturette.url, lecturette.publicId, 'video');
       await deleteFromGridFS(lecturette.publicId).catch(() => {});
+      deleteFromFirebase(`lecturettes/${lecturette.publicId}`).catch(() => {});
+      if (lecturette.b2Key) deleteFromB2(lecturette.b2Key).catch(() => {});
+      else deleteFromB2(`lecturettes/${lecturette.publicId}`).catch(() => {});
       const localName = path.basename((lecturette.url || '').split('?')[0]);
       if (localName) {
         await deleteFromGridFS(localName).catch(() => {});
+        deleteFromFirebase(`lecturettes/${localName}`).catch(() => {});
+        deleteFromB2(`lecturettes/${localName}`).catch(() => {});
         const localPath = path.join(uploadsDir, localName);
         if (fs.existsSync(localPath)) {
           try { fs.unlinkSync(localPath); } catch (e) {}

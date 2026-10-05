@@ -38,10 +38,10 @@ export default function PdfViewerModal({
 
   if (!solution) return null;
 
-  // Reliable server stream URL that avoids Cloudinary 401 ACL failure
-  const rawFileUrl = solution.url && (solution.url.startsWith('/api') || solution.url.startsWith('http'))
+  // Reliable file URL: prefer direct B2 URL, then Firebase, then server proxy
+  const rawFileUrl = solution.b2Url || solution.firebaseUrl || (solution.url && (solution.url.startsWith('/api') || solution.url.startsWith('http'))
     ? solution.url
-    : `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`;
+    : `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`);
   const fileUrl = apiUrl(rawFileUrl);
   const downloadUrl = `${fileUrl}?download=true`;
 

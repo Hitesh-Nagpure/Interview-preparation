@@ -24,3 +24,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Local backups and Firebase Service Account keys
+backups/
+*serviceAccountKey*.json
+*firebase-adminsdk*.json
