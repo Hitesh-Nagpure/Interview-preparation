@@ -137,7 +137,13 @@ const videoDiskUpload = multer({
 });
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(cors());
+app.use(cors({
+  origin: true,       // reflect the request origin (allows any origin)
+  credentials: true,
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Range'],
+  exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Content-Type']
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -1365,8 +1371,9 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
         b2St.stream.pipe(res);
         return;
       }
-      // If stream failed but we have a signed URL, redirect
-      if (solution.b2Url) return res.redirect(solution.b2Url);
+      // If stream didn't work directly, try signed URL (returns 200 from B2)
+      const signedUrl = await getB2SignedUrl(solution.b2Key, 3600);
+      if (signedUrl) return res.redirect(signedUrl);
     }
     if (isB2Ready()) {
       const b2Key2 = `solutions/${solution.localPath || `${solution.id}.pdf`}`;
@@ -1834,6 +1841,14 @@ app.get('/uploads/lecturette-:file', async (req, res, next) => {
     res.setHeader('Content-Type', streamData.file?.metadata?.contentType || 'video/webm');
     return streamData.stream.pipe(res);
   }
+  // 4. Try Cloudinary redirect from DB
+  try {
+    const folder = await DateFolder.findOne({ 'lecturettes.url': `/uploads/${filename}` });
+    const lec = folder?.lecturettes?.find(l => l.url === `/uploads/${filename}`);
+    if (lec && lec.cloudinaryUrl && lec.cloudinaryUrl.startsWith('http')) {
+      return res.redirect(lec.cloudinaryUrl);
+    }
+  } catch (_) {}
   next();
 });
 
@@ -1854,10 +1869,103 @@ app.get('/uploads/tat-:file', async (req, res, next) => {
       return;
     }
   }
+  // Try Cloudinary redirect from DB
+  try {
+    const folder = await DateFolder.findOne({ 'tat.pictures.url': `/uploads/${filename}` });
+    const pic = folder?.tat?.pictures?.find(p => p.url === `/uploads/${filename}`);
+    if (pic && pic.cloudinaryUrl && pic.cloudinaryUrl.startsWith('http')) {
+      return res.redirect(pic.cloudinaryUrl);
+    }
+  } catch (_) {}
   next();
 });
 
-// Fallback: stream GPE map images from B2 if local file is missing on ephemeral disk
+// ── Unified Media Proxy (/api/media/:type/:filename) ─────────────────────────
+// Serves any stored file from B2 by type folder and filename.
+// This is the PRIMARY way the Vercel frontend accesses media in production —
+// it routes through the Render backend which has B2 credentials.
+// Types: tat | lecturettes | gpe/maps | gpe/narratives | gpe/solutions | solutions
+app.get('/api/media/:type/:filename', async (req, res) => {
+  try {
+    let { type, filename } = req.params;
+    filename = decodeURIComponent(filename);
+    type = decodeURIComponent(type);
+    // Sanitise — no path traversal
+    if (filename.includes('..') || type.includes('..')) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+    // 1. Try local disk first (fast, works in dev)
+    const localPath = path.join(uploadsDir, filename);
+    if (fs.existsSync(localPath)) {
+      const ext = path.extname(filename).toLowerCase();
+      const mime = {
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+        '.gif': 'image/gif', '.webp': 'image/webp',
+        '.webm': 'video/webm', '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+        '.pdf': 'application/pdf'
+      }[ext] || 'application/octet-stream';
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return fs.createReadStream(localPath).pipe(res);
+    }
+    // 2. Stream from B2
+    if (isB2Ready()) {
+      const b2Key = `${type}/${filename}`;
+      const b2St = await getB2Stream(b2Key);
+      if (b2St) {
+        res.setHeader('Content-Type', b2St.contentType || 'application/octet-stream');
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+        b2St.stream.pipe(res);
+        return;
+      }
+    }
+    res.status(404).json({ error: 'Media not found' });
+  } catch (err) {
+    console.warn('Media proxy error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Support nested type paths like gpe/maps, gpe/narratives, gpe/solutions
+app.get('/api/media/:type1/:type2/:filename', async (req, res) => {
+  try {
+    const type = `${decodeURIComponent(req.params.type1)}/${decodeURIComponent(req.params.type2)}`;
+    const filename = decodeURIComponent(req.params.filename);
+    if (filename.includes('..') || type.includes('..')) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+    const localPath = path.join(uploadsDir, filename);
+    if (fs.existsSync(localPath)) {
+      const ext = path.extname(filename).toLowerCase();
+      const mime = {
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+        '.gif': 'image/gif', '.webp': 'image/webp',
+        '.webm': 'video/webm', '.mp4': 'video/mp4'
+      }[ext] || 'application/octet-stream';
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return fs.createReadStream(localPath).pipe(res);
+    }
+    if (isB2Ready()) {
+      const b2St = await getB2Stream(`${type}/${filename}`);
+      if (b2St) {
+        res.setHeader('Content-Type', b2St.contentType || 'application/octet-stream');
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+        b2St.stream.pipe(res);
+        return;
+      }
+    }
+    res.status(404).json({ error: 'Media not found' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 app.get('/uploads/gpe-:file', async (req, res, next) => {
   const filename = 'gpe-' + req.params.file;
   const filePath = path.join(uploadsDir, filename);
@@ -2503,8 +2611,8 @@ async function deleteStoredFile(url, publicId, resourceType = 'image') {
 const clientBuild = path.join(__dirname, '../client/dist');
 if (fs.existsSync(clientBuild)) {
   app.use(express.static(clientBuild));
-  // SPA fallback — must be LAST, only for non-API routes
-  app.get(/^(?!\/api).*/, (req, res) => {
+  // SPA fallback — must be LAST, only for non-API and non-uploads routes
+  app.get(/^(?!\/(api|uploads)).*/, (req, res) => {
     res.sendFile(path.join(clientBuild, 'index.html'));
   });
 } else {

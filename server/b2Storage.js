@@ -15,11 +15,11 @@ function initB2() {
   if (initialized) return s3Client;
   initialized = true;
 
-  const endpoint = process.env.B2_ENDPOINT;
+  const endpoint = process.env.B2_ENDPOINT || 'https://s3.us-east-005.backblazeb2.com';
   const region   = process.env.B2_REGION || 'us-east-005';
-  const keyId    = process.env.B2_KEY_ID;
-  const appKey   = process.env.B2_APPLICATION_KEY;
-  bucketName     = process.env.B2_BUCKET_NAME;
+  const keyId    = process.env.B2_KEY_ID || '005b4c93476e4610000000001';
+  const appKey   = process.env.B2_APPLICATION_KEY || 'K005ivXe5R+ov97avZpjWDs6IDe7T34';
+  bucketName     = process.env.B2_BUCKET_NAME || 'ssb-prep-data-2100';
 
   if (!endpoint || !keyId || !appKey || !bucketName) {
     console.log('ℹ️  Backblaze B2 not configured (B2_* env vars missing).');

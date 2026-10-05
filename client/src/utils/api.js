@@ -1,16 +1,19 @@
 const isLocalDev = typeof window !== 'undefined' && 
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
-  window.location.port === '3000';
+  (window.location.port === '3000' || window.location.port === '5173');
 
-export const API_BASE = (import.meta.env.VITE_API_URL || (isLocalDev ? 'http://localhost:5000' : '')).replace(/\/+$/, '');
+export const API_BASE = (
+  import.meta.env.VITE_API_URL || 
+  (isLocalDev ? 'http://localhost:5000' : 'https://ssb-psych-prep.onrender.com')
+).replace(/\/+$/, '');
 
 /**
  * Returns full URL for an API path.
- * If VITE_API_URL is configured, prepends the backend origin.
- * Otherwise, returns the relative path (working with Vite proxy or local server).
+ * In production, routes to https://ssb-psych-prep.onrender.com unless VITE_API_URL overrides it.
+ * In local dev, routes to http://localhost:5000 or relative proxy.
  *
  * @param {string} path - e.g. '/api/folders'
- * @returns {string} - e.g. 'https://backend.onrender.com/api/folders' or '/api/folders'
+ * @returns {string}
  */
 export function apiUrl(path) {
   if (!path) return '';
@@ -28,40 +31,35 @@ export function apiUrl(path) {
 
 /**
  * Resolves the best available media URL for a stored media item.
- * Priority: b2Url (permanent Backblaze CDN) → cloudinaryUrl → firebaseUrl → apiUrl(url)
- *
- * Use this for any TAT image, GPE map, lecturette video, or other stored file
- * to ensure it works in production where local disk is ephemeral.
+ * Priority: cloudinaryUrl (fast, public CDN) → firebaseUrl → server B2 proxy (/api/media/...) → apiUrl(url)
  *
  * @param {object} item - The DB item (pic, lec, gpe, etc.)
- * @param {string} urlField - Which URL field to fall back to (default: 'url')
- * @param {string} b2UrlField - Which b2Url field to check (default: 'b2Url')
+ * @param {string} urlField - Fallback url field (default: 'url')
  * @returns {string}
  */
-export function resolveMediaUrl(item, urlField = 'url', b2UrlField = 'b2Url') {
+export function resolveMediaUrl(item, urlField = 'url') {
   if (!item) return '';
-  // 1. Permanent Backblaze public URL (best — never expires, no auth needed)
-  if (item[b2UrlField] && item[b2UrlField].startsWith('http')) return item[b2UrlField];
-  // 2. Cloudinary CDN (permanent, but may be deleted if quota exceeded)
+  // 1. Cloudinary CDN (fastest, public, permanent)
   if (item.cloudinaryUrl && item.cloudinaryUrl.startsWith('http')) return item.cloudinaryUrl;
-  // 3. Firebase Storage URL (permanent)
+  // 2. Firebase Storage URL
   if (item.firebaseUrl && item.firebaseUrl.startsWith('http')) return item.firebaseUrl;
-  // 4. Fall back to the primary url field (works locally, may fail in production if disk is ephemeral)
+  // 3. Backblaze B2 streamed via backend proxy (avoids 401 on private bucket)
+  if (item.b2Key) {
+    return apiUrl(`/api/media/${item.b2Key.replace(/^\/+/, '')}`);
+  }
+  // 4. Fall back to the primary url field routed through backend API
   return apiUrl(item[urlField] || '');
 }
 
 /**
  * Resolves the best available URL for a GPE map image.
- * Priority: b2Url via mapB2Key → Cloudinary mapUrl → apiUrl(mapUrl)
+ * Priority: Cloudinary mapUrl → Cloudinary publicId → backend B2 proxy → apiUrl(mapUrl)
  */
 export function resolveGpeMapUrl(gpe) {
   if (!gpe) return '';
-  // Build b2Url from mapB2Key if not stored directly
-  if (gpe.mapB2Key) {
-    const b2Url = buildB2Url(gpe.mapB2Key);
-    if (b2Url) return b2Url;
-  }
   if (gpe.mapUrl && gpe.mapUrl.startsWith('http')) return gpe.mapUrl;
+  if (gpe.mapPublicId) return `https://res.cloudinary.com/bn8zsmom/image/upload/${gpe.mapPublicId}`;
+  if (gpe.mapB2Key) return apiUrl(`/api/media/${gpe.mapB2Key.replace(/^\/+/, '')}`);
   return apiUrl(gpe.mapUrl || '');
 }
 
@@ -70,11 +68,9 @@ export function resolveGpeMapUrl(gpe) {
  */
 export function resolveGpeNarrativeUrl(gpe) {
   if (!gpe) return '';
-  if (gpe.narrativeB2Key) {
-    const b2Url = buildB2Url(gpe.narrativeB2Key);
-    if (b2Url) return b2Url;
-  }
   if (gpe.narrativeImageUrl && gpe.narrativeImageUrl.startsWith('http')) return gpe.narrativeImageUrl;
+  if (gpe.narrativePublicId) return `https://res.cloudinary.com/bn8zsmom/image/upload/${gpe.narrativePublicId}`;
+  if (gpe.narrativeB2Key) return apiUrl(`/api/media/${gpe.narrativeB2Key.replace(/^\/+/, '')}`);
   return apiUrl(gpe.narrativeImageUrl || '');
 }
 
@@ -83,21 +79,8 @@ export function resolveGpeNarrativeUrl(gpe) {
  */
 export function resolveGpeSolutionUrl(sol) {
   if (!sol) return '';
-  if (sol.solutionB2Key) {
-    const b2Url = buildB2Url(sol.solutionB2Key);
-    if (b2Url) return b2Url;
-  }
   if (sol.solutionImageUrl && sol.solutionImageUrl.startsWith('http')) return sol.solutionImageUrl;
+  if (sol.solutionPublicId) return `https://res.cloudinary.com/bn8zsmom/image/upload/${sol.solutionPublicId}`;
+  if (sol.solutionB2Key) return apiUrl(`/api/media/${sol.solutionB2Key.replace(/^\/+/, '')}`);
   return apiUrl(sol.solutionImageUrl || '');
-}
-
-/**
- * Builds a Backblaze B2 public URL from an object key.
- * Bucket: ssb-prep-data-2100, region: us-east-005
- */
-function buildB2Url(key) {
-  if (!key) return '';
-  const bucket = 'ssb-prep-data-2100';
-  const cleanKey = key.replace(/^\/+/, '');
-  return `https://f005.backblazeb2.com/file/${bucket}/${cleanKey}`;
 }
