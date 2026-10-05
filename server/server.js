@@ -268,55 +268,12 @@ async function syncLocalSolutionsToStorage() {
   }
 }
 
-// Automatically sync any legacy /uploads/ lecturette videos to Cloudinary
-async function syncLocalLecturettesToCloudinary() {
-  if (!cloudinary) return;
-  try {
-    const folders = await DateFolder.find({ 'lecturettes.url': { $regex: '^/uploads/' } });
-    for (const folder of folders) {
-      let modified = false;
-      for (const lec of folder.lecturettes || []) {
-        if (lec.url && lec.url.startsWith('/uploads/')) {
-          const localName = path.basename(lec.url.split('?')[0]);
-          const localPath = path.join(uploadsDir, localName);
-          if (fs.existsSync(localPath)) {
-            try {
-              console.log(`☁️ Syncing local lecturette ${localName} to Cloudinary...`);
-              const result = await cloudinary.uploader.upload_large(localPath, {
-                resource_type: 'video',
-                folder: 'ssb-psych-prep/lecturettes',
-                chunk_size: 6000000,
-                timeout: 300000
-              });
-              if (result?.secure_url) {
-                lec.url = result.secure_url;
-                lec.publicId = result.public_id;
-                modified = true;
-                console.log(`✅ Local lecturette synced to Cloudinary: ${result.secure_url}`);
-              }
-            } catch (err) {
-              console.warn(`Sync legacy lecturette ${localName} warning:`, err.message);
-            }
-          }
-        }
-      }
-      if (modified) {
-        folder.markModified('lecturettes');
-        await folder.save();
-      }
-    }
-  } catch (err) {
-    console.warn('Sync lecturettes to Cloudinary warning:', err.message);
-  }
-}
-
 mongoose
   .connect(MONGO_URI)
   .then(() => {
     console.log('✅ Connected to MongoDB Atlas: ssb_psych_prep');
     getGfsBucket();
     syncLocalSolutionsToStorage();
-    syncLocalLecturettesToCloudinary();
     seedInitialDataIfEmpty();
   })
   .catch((err) => {
@@ -1899,6 +1856,27 @@ app.get('/uploads/tat-:file', async (req, res, next) => {
   }
   next();
 });
+
+// Fallback: stream GPE map images from B2 if local file is missing on ephemeral disk
+app.get('/uploads/gpe-:file', async (req, res, next) => {
+  const filename = 'gpe-' + req.params.file;
+  const filePath = path.join(uploadsDir, filename);
+  if (fs.existsSync(filePath)) {
+    return next();
+  }
+  if (isB2Ready()) {
+    const b2St = await getB2Stream(`gpe/maps/${filename}`);
+    if (b2St) {
+      res.setHeader('Content-Type', b2St.contentType || 'image/png');
+      if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      b2St.stream.pipe(res);
+      return;
+    }
+  }
+  next();
+});
+
 
 
 // 15. DELETE lecturette video by folder and lecturette ID
