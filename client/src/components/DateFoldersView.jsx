@@ -10,7 +10,7 @@ import {
 import PdfViewerModal from './PdfViewerModal';
 import CustomVideoPlayer from './CustomVideoPlayer';
 import NotesEditor from './NotesEditor';
-import { apiUrl, resolveMediaUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl } from '../utils/api';
+import { apiUrl, resolveMediaUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 function formatBytes(bytes) {
@@ -712,16 +712,17 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                         <div
                                           key={sol.id || sIdx}
                                           onClick={() => {
-                                            if (sol.solutionImageUrl) {
-                                              setBigImage({ url: sol.solutionImageUrl, label: `${sol.author}'s Solution Photo` });
+                                            const solUrl = resolveGpeSolutionUrl(sol);
+                                            if (solUrl) {
+                                              setBigImage({ url: solUrl, label: `${sol.author}'s Solution Photo` });
                                             }
                                           }}
                                           className="shrink-0 p-1.5 rounded-lg border border-slate-200 dark:border-dark-700 bg-slate-50 dark:bg-dark-800 flex items-center gap-2 cursor-pointer hover:border-purple-500/50 transition-colors"
                                           title="View solution photo"
                                         >
-                                          {sol.solutionImageUrl ? (
+                                          {resolveGpeSolutionUrl(sol) ? (
                                             <img
-                                              src={sol.solutionImageUrl}
+                                              src={resolveGpeSolutionUrl(sol)}
                                               alt="Solution"
                                               className="w-8 h-8 rounded object-cover border border-purple-500/30"
                                             />
@@ -754,7 +755,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                     <Eye className="w-3 h-3" />
                                     <span>Map</span>
                                   </button>
-                                  {gpe.narrativeImageUrl && (
+                                  {resolveGpeNarrativeUrl(gpe) && (
                                     <button
                                       onClick={() => setBigImage({ url: resolveGpeNarrativeUrl(gpe), label: `${gpe.title} - Narrative Card` })}
                                       className="btn-secondary py-1.5 px-2.5 text-xs inline-flex items-center gap-1 text-slate-600 dark:text-slate-300"

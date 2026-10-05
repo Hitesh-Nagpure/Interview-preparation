@@ -6,7 +6,7 @@ import {
   Image as ImageIcon, ChevronDown, ChevronUp, User, Sparkles, Move
 } from 'lucide-react';
 import { soundEngine } from '../utils/audio';
-import { apiUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
+import { apiUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl, isCloudinaryPublicId } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 export default function GpeSimulator({
@@ -329,7 +329,7 @@ export default function GpeSimulator({
     );
   }
 
-  const hasNarrativeImage = Boolean(gpe.narrativeImageUrl);
+  const hasNarrativeImage = Boolean(gpe.narrativeImageUrl || gpe.narrativeB2Key || (gpe.narrativePublicId && isCloudinaryPublicId(gpe.narrativePublicId)));
   const hasNarrativeText = Boolean(gpe.description && gpe.description.trim());
   const solutionsList = gpe.solutions || [];
 
@@ -492,7 +492,7 @@ export default function GpeSimulator({
         {/* ── MAP / SOLUTION CANVAS (Interactive with Mouse Controls) ── */}
         {(() => {
           const currentSolution = selectedSolutionForCanvas || (solutionsList.length > 0 ? solutionsList[0] : null) || (solutionPhotoPreview ? { solutionImageUrl: solutionPhotoPreview, author: candidateAuthor || 'Selected Photo' } : null);
-          const currentSolutionUrl = currentSolution?.solutionImageUrl || null;
+          const currentSolutionUrl = currentSolution ? resolveGpeSolutionUrl(currentSolution) : null;
           const isViewingSolution = activeCanvasView === 'solution' && Boolean(currentSolutionUrl);
 
           return (
@@ -622,6 +622,21 @@ export default function GpeSimulator({
                     alt={isViewingSolution ? (currentSolution?.author ? `${currentSolution.author}'s Solution` : 'Solution Sheet') : gpe.title}
                     className="max-h-[82vh] w-auto object-contain rounded-lg shadow-2xl"
                     draggable={false}
+                    onError={(e) => {
+                      if (!isViewingSolution && gpe) {
+                        if (gpe.mapB2Key && !e.target.src.includes('/api/media/')) {
+                          e.target.src = apiUrl(`/api/media/${gpe.mapB2Key.replace(/^\/+/, '')}`);
+                        } else if (gpe.mapUrl && !e.target.src.includes(gpe.mapUrl)) {
+                          e.target.src = apiUrl(gpe.mapUrl);
+                        }
+                      } else if (isViewingSolution && currentSolution) {
+                        if (currentSolution.solutionB2Key && !e.target.src.includes('/api/media/')) {
+                          e.target.src = apiUrl(`/api/media/${currentSolution.solutionB2Key.replace(/^\/+/, '')}`);
+                        } else if (currentSolution.solutionImageUrl && !e.target.src.includes(currentSolution.solutionImageUrl)) {
+                          e.target.src = apiUrl(currentSolution.solutionImageUrl);
+                        }
+                      }
+                    }}
                   />
                 </div>
               </div>
@@ -707,6 +722,13 @@ export default function GpeSimulator({
                         src={resolveGpeNarrativeUrl(gpe)}
                         alt="GPE Narrative Card"
                         className="max-h-[75vh] w-auto object-contain rounded shadow"
+                        onError={(e) => {
+                          if (gpe?.narrativeB2Key && !e.target.src.includes('/api/media/')) {
+                            e.target.src = apiUrl(`/api/media/${gpe.narrativeB2Key.replace(/^\/+/, '')}`);
+                          } else if (gpe?.narrativeImageUrl && !e.target.src.includes(gpe.narrativeImageUrl)) {
+                            e.target.src = apiUrl(gpe.narrativeImageUrl);
+                          }
+                        }}
                       />
                     </div>
                   )}
@@ -909,12 +931,19 @@ export default function GpeSimulator({
                           }`}
                         >
                           <div className="flex items-center gap-3 min-w-0">
-                            {sol.solutionImageUrl ? (
+                            {(sol.solutionImageUrl || sol.solutionB2Key || (sol.solutionPublicId && isCloudinaryPublicId(sol.solutionPublicId))) ? (
                               <img
                                 src={resolveGpeSolutionUrl(sol)}
                                 alt="Solution thumbnail"
                                 onClick={() => setInspectImage({ url: resolveGpeSolutionUrl(sol), title: `${sol.author}'s Solution Sheet` })}
                                 className="w-14 h-14 object-cover rounded-lg border border-purple-500/30 cursor-pointer hover:opacity-80 transition-opacity shrink-0"
+                                onError={(e) => {
+                                  if (sol.solutionB2Key && !e.target.src.includes('/api/media/')) {
+                                    e.target.src = apiUrl(`/api/media/${sol.solutionB2Key.replace(/^\/+/, '')}`);
+                                  } else if (sol.solutionImageUrl && !e.target.src.includes(sol.solutionImageUrl)) {
+                                    e.target.src = apiUrl(sol.solutionImageUrl);
+                                  }
+                                }}
                               />
                             ) : (
                               <div className="w-12 h-12 rounded-lg bg-purple-500/10 text-purple-500 flex items-center justify-center font-bold shrink-0">
@@ -935,7 +964,7 @@ export default function GpeSimulator({
                           </div>
 
                           <div className="flex items-center gap-1.5 shrink-0">
-                            {sol.solutionImageUrl && (
+                            {(sol.solutionImageUrl || sol.solutionB2Key || (sol.solutionPublicId && isCloudinaryPublicId(sol.solutionPublicId))) && (
                               <>
                                 <button
                                   type="button"

@@ -5,7 +5,7 @@ import {
   X, CheckCircle2, FileText, Upload, Calendar, ChevronDown, ChevronUp, ZoomIn,
   Image as ImageIcon, Edit3, Check
 } from 'lucide-react';
-import { apiUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
+import { apiUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl, isCloudinaryPublicId } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 export default function GpeView({ folders, onStartTest, onNavigate, onRefresh }) {
@@ -320,7 +320,7 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                       </div>
                     </div>
 
-                    {gpe.narrativeImageUrl ? (
+                    {(gpe.narrativeImageUrl || gpe.narrativeB2Key || (gpe.narrativePublicId && isCloudinaryPublicId(gpe.narrativePublicId))) ? (
                       <div
                         onClick={() => setInspectMap({ url: resolveGpeNarrativeUrl(gpe), title: `${gpe.title} - Narrative Card`, scale: '' })}
                         className="relative aspect-video rounded-xl overflow-hidden bg-slate-950 cursor-pointer group border border-slate-200 dark:border-dark-700 shadow-sm"
@@ -411,7 +411,7 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                                 </div>
                               </div>
 
-                              {sol.solutionImageUrl && (
+                              {(sol.solutionImageUrl || sol.solutionB2Key || (sol.solutionPublicId && isCloudinaryPublicId(sol.solutionPublicId))) && (
                                 <div
                                   onClick={() => setInspectMap({ url: resolveGpeSolutionUrl(sol), title: `${sol.author}'s Solution Sheet`, scale: '' })}
                                   className="relative aspect-video max-h-36 rounded-lg overflow-hidden bg-black/40 border border-purple-500/30 cursor-pointer group flex items-center justify-center"
