@@ -219,6 +219,10 @@ const GpeSolutionSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  solutionB2Key: {
+    type: String,
+    default: ''
+  },
   originalImageName: {
     type: String,
     default: ''
@@ -246,6 +250,10 @@ const GpeSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  mapB2Key: {
+    type: String,
+    default: ''
+  },
   originalMapName: {
     type: String,
     default: 'GPE_Map.jpg'
@@ -259,6 +267,10 @@ const GpeSchema = new mongoose.Schema({
     default: ''
   },
   narrativePublicId: {
+    type: String,
+    default: ''
+  },
+  narrativeB2Key: {
     type: String,
     default: ''
   },
