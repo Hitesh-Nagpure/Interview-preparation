@@ -38,10 +38,11 @@ export default function PdfViewerModal({
 
   if (!solution) return null;
 
-  // Reliable file URL: prefer direct B2 URL, then Firebase, then server proxy
-  const rawFileUrl = solution.b2Url || solution.firebaseUrl || (solution.url && (solution.url.startsWith('/api') || solution.url.startsWith('http'))
-    ? solution.url
-    : `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`);
+  // Always use the server proxy route — it streams from B2/Firebase/GridFS with fresh auth (no expiry)
+  const proxyUrl = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`;
+  const rawFileUrl = solution.url?.startsWith('http') && !solution.url.includes('cloudinary')
+    ? solution.url  // non-Cloudinary absolute URLs (Firebase etc.)
+    : proxyUrl;     // default: server proxy (handles B2 private bucket)
   const fileUrl = apiUrl(rawFileUrl);
   const downloadUrl = `${fileUrl}?download=true`;
 

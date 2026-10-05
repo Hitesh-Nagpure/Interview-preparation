@@ -62,6 +62,7 @@ const {
   isB2Ready,
   uploadBufferToB2,
   getB2SignedUrl,
+  getB2PublicUrl,
   getB2Stream,
   deleteFromB2,
   b2ObjectExists
@@ -582,24 +583,27 @@ app.post('/api/folders/:dateFolder/tat',
           const file = req.files[idx];
           let url, fileId;
 
-          if (cloudinary) {
-            // Upload buffer directly to Cloudinary — official SDK, no signature issues
-            const result = await uploadBufferToCloudinary(file.buffer, file.originalname);
-            url = result.secure_url;
-            fileId = result.public_id;
-          } else {
-            // Disk fallback for local development
-            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-            const ext = path.extname(file.originalname) || '.jpg';
-            const filename = 'tat-' + uniqueSuffix + ext;
-            fs.writeFileSync(path.join(uploadsDir, filename), file.buffer);
-            url = `/uploads/${filename}`;
-            fileId = filename;
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+          const ext = path.extname(file.originalname) || '.jpg';
+          const filename = 'tat-' + uniqueSuffix + ext;
+          fs.writeFileSync(path.join(uploadsDir, filename), file.buffer);
+          url = `/uploads/${filename}`;
+          fileId = filename;
+          let b2Key = null;
+
+          if (isB2Ready()) {
+            try {
+              const b2Res = await uploadBufferToB2(file.buffer, `tat/${filename}`, file.mimetype || 'image/jpeg');
+              b2Key = b2Res.key;
+            } catch (b2Err) {
+              console.warn('B2 TAT upload warning:', b2Err.message);
+            }
           }
 
           newPics.push({
             id: fileId,
             url,
+            b2Key,
             originalName: file.originalname,
             size: file.size,
             batch: batchMap[idx] || 'fresh',
@@ -1249,7 +1253,7 @@ app.post('/api/folders/:dateFolder/solutions',
         try {
           const b2Res = await uploadBufferToB2(req.file.buffer, `solutions/${localFilename}`, 'application/pdf');
           b2Key = b2Res.key;
-          b2Url = await getB2SignedUrl(b2Key, 604800);
+          b2Url = getB2PublicUrl(b2Key);
           console.log(`🗂️  Solution PDF uploaded to B2: ${b2Key}`);
         } catch (b2Err) {
           console.warn('B2 upload warning (solutions):', b2Err.message);
@@ -1579,7 +1583,7 @@ app.put('/api/folders/:dateFolder/solutions/:solutionId',
           try {
             const b2Res = await uploadBufferToB2(req.file.buffer, `solutions/${newLocalName}`, 'application/pdf');
             solution.b2Key = b2Res.key;
-            solution.b2Url = await getB2SignedUrl(b2Res.key, 604800);
+            solution.b2Url = getB2PublicUrl(b2Res.key);
             console.log(`🗂️  Updated Solution PDF saved to B2: ${b2Res.key}`);
           } catch (b2Err) {
             console.warn('B2 upload warning on edit:', b2Err.message);
@@ -1736,23 +1740,20 @@ app.post('/api/folders/:dateFolder/lecturette',
       let finalPublicId = filename;
       const newLecId = 'lec-' + Date.now();
 
-      // If Cloudinary is configured, upload to Cloudinary so it is stored permanently on Cloudinary
-      if (cloudinary) {
+      let b2Key = null;
+      let b2Url = null;
+
+      // Primary cloud storage: Backblaze B2
+      if (isB2Ready()) {
         try {
-          console.log(`⚡ Uploading video ${filename} (${(req.file.size / (1024 * 1024)).toFixed(1)} MB) to Cloudinary...`);
-          const result = await cloudinary.uploader.upload_large(localFilePath, {
-            resource_type: 'video',
-            folder: 'ssb-psych-prep/lecturettes',
-            chunk_size: 6000000,
-            timeout: 300000
-          });
-          if (result?.secure_url) {
-            finalUrl = result.secure_url;
-            finalPublicId = result.public_id;
-            console.log(`☁️ Cloudinary video upload success: ${result.secure_url}`);
-          }
-        } catch (cldErr) {
-          console.warn(`Cloudinary upload warning for ${filename}:`, cldErr.message);
+          console.log(`🗂️  Uploading video ${filename} (${(req.file.size / (1024 * 1024)).toFixed(1)} MB) to Backblaze B2...`);
+          const fileBuf = fs.readFileSync(localFilePath);
+          const b2Res = await uploadBufferToB2(fileBuf, `lecturettes/${filename}`, req.file.mimetype || 'video/webm');
+          b2Key = b2Res.key;
+          b2Url = b2Res.publicUrl || getB2PublicUrl(b2Res.key);
+          console.log(`🗂️  Backblaze B2 video upload success: ${b2Res.key}`);
+        } catch (b2Err) {
+          console.warn(`Backblaze B2 upload warning for ${filename}:`, b2Err.message);
         }
       }
 
@@ -1762,6 +1763,8 @@ app.post('/api/folders/:dateFolder/lecturette',
         recordedDate: req.body.recordedDate || dateFolder,
         duration: Number(duration) || 0,
         url: finalUrl,
+        b2Key,
+        b2Url,
         publicId: finalPublicId,
         recordedAt: new Date()
       };
@@ -1794,34 +1797,8 @@ app.post('/api/folders/:dateFolder/lecturette',
         folder
       });
 
-      // 2. Also write to B2 / Firebase / GridFS in background
-      if (isB2Ready()) {
-        (async () => {
-          try {
-            if (fs.existsSync(localFilePath)) {
-              const fileBuf = fs.readFileSync(localFilePath);
-              const b2Res = await uploadBufferToB2(
-                fileBuf,
-                `lecturettes/${filename}`,
-                req.file.mimetype || 'video/webm'
-              );
-              const signedUrl = await getB2SignedUrl(b2Res.key, 604800);
-              console.log(`🗂️  Lecturette video saved to B2: ${b2Res.key}`);
-              const curFolder = await DateFolder.findOne({ dateFolder });
-              if (curFolder && curFolder.lecturettes) {
-                const lec = curFolder.lecturettes.find(l => l.id === newLecId);
-                if (lec) {
-                  lec.b2Key = b2Res.key;
-                  lec.b2Url = signedUrl;
-                  await curFolder.save();
-                }
-              }
-            }
-          } catch (b2Err) {
-            console.warn('B2 lecturette save warning:', b2Err.message);
-          }
-        })();
-      } else if (isFirebaseReady()) {
+      // Fallback: If B2 was not ready, write to Firebase / GridFS in background
+      if (!isB2Ready() && isFirebaseReady()) {
         (async () => {
           try {
             if (fs.existsSync(localFilePath)) {
@@ -1902,6 +1879,27 @@ app.get('/uploads/lecturette-:file', async (req, res, next) => {
   }
   next();
 });
+
+// Fallback: stream TAT pictures from B2 if local file is missing on ephemeral disk
+app.get('/uploads/tat-:file', async (req, res, next) => {
+  const filename = 'tat-' + req.params.file;
+  const filePath = path.join(uploadsDir, filename);
+  if (fs.existsSync(filePath)) {
+    return next();
+  }
+  if (isB2Ready()) {
+    const b2St = await getB2Stream(`tat/${filename}`);
+    if (b2St) {
+      res.setHeader('Content-Type', b2St.contentType || 'image/jpeg');
+      if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      b2St.stream.pipe(res);
+      return;
+    }
+  }
+  next();
+});
+
 
 // 15. DELETE lecturette video by folder and lecturette ID
 app.delete('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res) => {

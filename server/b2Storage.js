@@ -46,8 +46,21 @@ function isB2Ready() {
 }
 
 /**
- * Upload a Buffer to B2. Returns the permanent pre-signed URL (7-day) and the object key.
- * For private buckets, we generate a fresh signed URL each time content is served.
+ * Build a permanent public URL for a B2 key.
+ * Works when the bucket is set to "Public" in Backblaze settings.
+ * Format: https://f005.backblazeb2.com/file/<bucketName>/<key>
+ */
+function getB2PublicUrl(key) {
+  if (!bucketName) return null;
+  const cleanKey = key.replace(/^\/+/, '');
+  const region = process.env.B2_REGION || 'us-east-005';
+  const regionPart = region.split('-').pop(); // e.g. "005" from "us-east-005"
+  return `https://f${regionPart}.backblazeb2.com/file/${bucketName}/${cleanKey}`;
+}
+
+/**
+ * Upload a Buffer to B2. Returns the object key and permanent public URL.
+ * Bucket must be set to "Public" in Backblaze for publicUrl to work without auth.
  */
 async function uploadBufferToB2(buffer, key, contentType = 'application/octet-stream') {
   const client = initB2();
@@ -62,8 +75,9 @@ async function uploadBufferToB2(buffer, key, contentType = 'application/octet-st
     ContentType: contentType
   }));
 
+  const publicUrl = getB2PublicUrl(cleanKey);
   console.log(`🗂️  B2 upload complete: ${cleanKey}`);
-  return { key: cleanKey, bucket: bucketName };
+  return { key: cleanKey, bucket: bucketName, publicUrl };
 }
 
 /**
@@ -145,6 +159,7 @@ module.exports = {
   isB2Ready,
   uploadBufferToB2,
   getB2SignedUrl,
+  getB2PublicUrl,
   getB2Stream,
   deleteFromB2,
   b2ObjectExists,

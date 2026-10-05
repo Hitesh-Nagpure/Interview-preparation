@@ -757,7 +757,7 @@ export default function GpeSimulator({
                     <span>Upload Solution Sheet Photo</span>
                   </h3>
                   <p className="text-xs text-slate-400 leading-relaxed">
-                    Writing period is complete. Snap or select a clear photo of your handwritten paper solution. It will be securely stored on Cloudinary.
+                    Writing period is complete. Snap or select a clear photo of your handwritten paper solution. It will be securely stored in cloud storage.
                   </p>
                 </div>
 
@@ -774,7 +774,7 @@ export default function GpeSimulator({
                   {uploadSuccessToast && (
                     <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-1.5">
                       <Check className="w-4 h-4" />
-                      <span>Solution photo uploaded to Cloudinary successfully!</span>
+                      <span>Solution photo uploaded successfully!</span>
                     </div>
                   )}
 
@@ -890,7 +890,7 @@ export default function GpeSimulator({
                     className="w-full py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30 transition-all text-xs"
                   >
                     <Upload className="w-4 h-4" />
-                    <span>{isUploadingSolution ? 'Uploading to Cloudinary...' : 'Upload Solution to Cloudinary'}</span>
+                    <span>{isUploadingSolution ? 'Uploading...' : 'Upload Solution'}</span>
                   </button>
                 </form>
 
@@ -928,7 +928,7 @@ export default function GpeSimulator({
                               </p>
                               {sol.solutionImageUrl && (
                                 <span className="text-[9px] font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1 rounded border border-emerald-500/20">
-                                  Cloudinary CDN
+                                  Cloud Storage
                                 </span>
                               )}
                             </div>

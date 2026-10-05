@@ -22,6 +22,15 @@ const PictureSchema = new mongoose.Schema({
     enum: ['rewrite', 'fresh'],
     default: 'fresh'
   },
+  cloudinaryUrl: {
+    type: String
+  },
+  b2Key: {
+    type: String
+  },
+  b2Url: {
+    type: String
+  },
   uploadedAt: {
     type: Date,
     default: Date.now
