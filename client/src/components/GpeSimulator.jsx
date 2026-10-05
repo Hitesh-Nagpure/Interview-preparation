@@ -6,7 +6,7 @@ import {
   Image as ImageIcon, ChevronDown, ChevronUp, User, Sparkles, Move
 } from 'lucide-react';
 import { soundEngine } from '../utils/audio';
-import { apiUrl } from '../utils/api';
+import { apiUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 export default function GpeSimulator({
@@ -618,7 +618,7 @@ export default function GpeSimulator({
                   className="max-w-full max-h-full flex items-center justify-center pointer-events-none"
                 >
                   <img
-                    src={isViewingSolution ? currentSolutionUrl : gpe.mapUrl}
+                    src={isViewingSolution ? currentSolutionUrl : resolveGpeMapUrl(gpe)}
                     alt={isViewingSolution ? (currentSolution?.author ? `${currentSolution.author}'s Solution` : 'Solution Sheet') : gpe.title}
                     className="max-h-[82vh] w-auto object-contain rounded-lg shadow-2xl"
                     draggable={false}
@@ -701,10 +701,10 @@ export default function GpeSimulator({
                     <div className={`rounded-xl overflow-hidden border flex items-center justify-center p-2 cursor-pointer ${
                       isDark ? 'border-dark-700 bg-black/40' : 'border-slate-200 bg-slate-50'
                     }`}
-                    onClick={() => setInspectImage({ url: gpe.narrativeImageUrl, title: 'Narrative Problem Card' })}
+                    onClick={() => setInspectImage({ url: resolveGpeNarrativeUrl(gpe), title: 'Narrative Problem Card' })}
                     >
                       <img
-                        src={gpe.narrativeImageUrl}
+                        src={resolveGpeNarrativeUrl(gpe)}
                         alt="GPE Narrative Card"
                         className="max-h-[75vh] w-auto object-contain rounded shadow"
                       />
@@ -911,9 +911,9 @@ export default function GpeSimulator({
                           <div className="flex items-center gap-3 min-w-0">
                             {sol.solutionImageUrl ? (
                               <img
-                                src={sol.solutionImageUrl}
+                                src={resolveGpeSolutionUrl(sol)}
                                 alt="Solution thumbnail"
-                                onClick={() => setInspectImage({ url: sol.solutionImageUrl, title: `${sol.author}'s Solution Sheet` })}
+                                onClick={() => setInspectImage({ url: resolveGpeSolutionUrl(sol), title: `${sol.author}'s Solution Sheet` })}
                                 className="w-14 h-14 object-cover rounded-lg border border-purple-500/30 cursor-pointer hover:opacity-80 transition-opacity shrink-0"
                               />
                             ) : (
@@ -955,7 +955,7 @@ export default function GpeSimulator({
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => setInspectImage({ url: sol.solutionImageUrl, title: `${sol.author}'s Solution Sheet` })}
+                                  onClick={() => setInspectImage({ url: resolveGpeSolutionUrl(sol), title: `${sol.author}'s Solution Sheet` })}
                                   className="p-1.5 rounded text-slate-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10 transition-colors"
                                   title="Fullscreen Pan & Zoom"
                                 >

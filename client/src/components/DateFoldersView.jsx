@@ -10,7 +10,7 @@ import {
 import PdfViewerModal from './PdfViewerModal';
 import CustomVideoPlayer from './CustomVideoPlayer';
 import NotesEditor from './NotesEditor';
-import { apiUrl } from '../utils/api';
+import { apiUrl, resolveMediaUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 function formatBytes(bytes) {
@@ -748,7 +748,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                     <span>Launch GPE Exercise</span>
                                   </button>
                                   <button
-                                    onClick={() => setBigImage({ url: gpe.mapUrl, label: `${gpe.title} (${gpe.scale || '1 cm = 2 km'})` })}
+                                    onClick={() => setBigImage({ url: resolveGpeMapUrl(gpe), label: `${gpe.title} (${gpe.scale || '1 cm = 2 km'})` })}
                                     className="btn-secondary py-1.5 px-2.5 text-xs inline-flex items-center gap-1 text-slate-600 dark:text-slate-300"
                                   >
                                     <Eye className="w-3 h-3" />
@@ -756,7 +756,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                   </button>
                                   {gpe.narrativeImageUrl && (
                                     <button
-                                      onClick={() => setBigImage({ url: gpe.narrativeImageUrl, label: `${gpe.title} - Narrative Card` })}
+                                      onClick={() => setBigImage({ url: resolveGpeNarrativeUrl(gpe), label: `${gpe.title} - Narrative Card` })}
                                       className="btn-secondary py-1.5 px-2.5 text-xs inline-flex items-center gap-1 text-slate-600 dark:text-slate-300"
                                     >
                                       <ImageIcon className="w-3 h-3" />
@@ -902,10 +902,10 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                 )}
                                 {/* Video thumbnail + play */}
                                 <div
-                                  onClick={() => setVideoModal({ url: apiUrl(lec.url || lec.b2Url || lec.firebaseUrl), title: lec.title })}
+                                  onClick={() => setVideoModal({ url: resolveMediaUrl(lec), title: lec.title })}
                                   className="aspect-video bg-black rounded-lg overflow-hidden relative cursor-pointer group flex items-center justify-center"
                                 >
-                                  <video src={apiUrl(lec.url || lec.b2Url || lec.firebaseUrl)} className="w-full h-full object-cover" />
+                                  <video src={resolveMediaUrl(lec)} className="w-full h-full object-cover" />
                                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center group-hover:bg-black/20 transition-colors">
                                     <div className="w-10 h-10 rounded-full bg-white/90 text-slate-900 flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
                                       <Play className="w-4 h-4 fill-current" />
@@ -1659,7 +1659,7 @@ function InspectModal({ info, onClose, onStartTest, onRefresh }) {
                           onClick={() => setLightboxIndex(idx)}
                         >
                           <img
-                            src={pic.url}
+                            src={resolveMediaUrl(pic)}
                             alt={pic.originalName || 'TAT Picture'}
                             className={`w-full h-full object-cover transition-all duration-300 ${
                               isRevealed
@@ -1848,7 +1848,7 @@ function InspectModal({ info, onClose, onStartTest, onRefresh }) {
             )}
 
             <img
-              src={displayPics[lightboxIndex].url}
+              src={resolveMediaUrl(displayPics[lightboxIndex])}
               alt={displayPics[lightboxIndex].originalName || 'TAT picture'}
               className="max-h-[78vh] max-w-full rounded-lg object-contain shadow-2xl"
             />

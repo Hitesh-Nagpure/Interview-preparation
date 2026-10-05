@@ -4,7 +4,7 @@ import {
   RotateCcw, CheckCircle2, ArrowLeft, Shield, Sun, Moon
 } from 'lucide-react';
 import { soundEngine } from '../utils/audio';
-import { apiUrl } from '../utils/api';
+import { apiUrl, resolveMediaUrl } from '../utils/api';
 
 export default function TestSimulator({ testType: testTypeProp, dateFolder, onExit, isDark, toggleTheme }) {
   // For PSYCH mode we run TAT first then WAT
@@ -383,7 +383,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
                 <div key={i} className="rounded overflow-hidden bg-slate-200 dark:bg-dark-700 aspect-video flex items-center justify-center">
                   {it.isBlank
                     ? <span className="text-[10px] text-slate-400 font-mono">BLANK</span>
-                    : <img src={it.url} alt="" className="w-full h-full object-cover" />}
+                    : <img src={resolveMediaUrl(it)} alt="" className="w-full h-full object-cover" />}
                 </div>
               ))}
             </div>
@@ -489,7 +489,7 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
             {tatPhase === 'OBSERVE' ? (
               currentItem?.isBlank
                 ? <div className="w-full min-h-[88vh] bg-slate-50 dark:bg-black" />
-                : <img src={currentItem?.url} alt="TAT" className="w-full max-h-[88vh] object-contain" />
+                : <img src={resolveMediaUrl(currentItem)} alt="TAT" className="w-full max-h-[88vh] object-contain" />
             ) : (
               <div className="w-full min-h-[88vh] bg-slate-50 dark:bg-black" />
             )}

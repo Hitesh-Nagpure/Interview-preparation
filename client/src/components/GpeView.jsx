@@ -5,7 +5,7 @@ import {
   X, CheckCircle2, FileText, Upload, Calendar, ChevronDown, ChevronUp, ZoomIn,
   Image as ImageIcon, Edit3, Check
 } from 'lucide-react';
-import { apiUrl } from '../utils/api';
+import { apiUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 export default function GpeView({ folders, onStartTest, onNavigate, onRefresh }) {
@@ -306,11 +306,11 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                   {/* Map & Narrative Preview Thumbnails */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div
-                      onClick={() => setInspectMap({ url: gpe.mapUrl, title: `${gpe.title} (${gpe.scale || '1 cm = 2 km'}) - Map Model`, scale: gpe.scale })}
+                      onClick={() => setInspectMap({ url: resolveGpeMapUrl(gpe), title: `${gpe.title} (${gpe.scale || '1 cm = 2 km'}) - Map Model`, scale: gpe.scale })}
                       className="relative aspect-video rounded-xl overflow-hidden bg-slate-950 cursor-pointer group border border-slate-200 dark:border-dark-700 shadow-sm"
                     >
                       <img
-                        src={gpe.mapUrl}
+                        src={resolveGpeMapUrl(gpe)}
                         alt={gpe.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
@@ -322,11 +322,11 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
 
                     {gpe.narrativeImageUrl ? (
                       <div
-                        onClick={() => setInspectMap({ url: gpe.narrativeImageUrl, title: `${gpe.title} - Narrative Card`, scale: '' })}
+                        onClick={() => setInspectMap({ url: resolveGpeNarrativeUrl(gpe), title: `${gpe.title} - Narrative Card`, scale: '' })}
                         className="relative aspect-video rounded-xl overflow-hidden bg-slate-950 cursor-pointer group border border-slate-200 dark:border-dark-700 shadow-sm"
                       >
                         <img
-                          src={gpe.narrativeImageUrl}
+                          src={resolveGpeNarrativeUrl(gpe)}
                           alt="Narrative Card"
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                         />
@@ -413,11 +413,11 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
 
                               {sol.solutionImageUrl && (
                                 <div
-                                  onClick={() => setInspectMap({ url: sol.solutionImageUrl, title: `${sol.author}'s Solution Sheet`, scale: '' })}
+                                  onClick={() => setInspectMap({ url: resolveGpeSolutionUrl(sol), title: `${sol.author}'s Solution Sheet`, scale: '' })}
                                   className="relative aspect-video max-h-36 rounded-lg overflow-hidden bg-black/40 border border-purple-500/30 cursor-pointer group flex items-center justify-center"
                                 >
                                   <img
-                                    src={sol.solutionImageUrl}
+                                    src={resolveGpeSolutionUrl(sol)}
                                     alt="Solution Sheet"
                                     className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-200"
                                   />
