@@ -10,7 +10,7 @@ import {
 import PdfViewerModal from './PdfViewerModal';
 import CustomVideoPlayer from './CustomVideoPlayer';
 import NotesEditor from './NotesEditor';
-import { apiUrl, resolveMediaUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
+import { apiUrl, resolveMediaUrl, resolveLecturetteUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 function formatBytes(bytes) {
@@ -493,7 +493,23 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                 onClick={() => setInspectModal({ type: 'TAT', dateFolder: folder.dateFolder })}
                                 className="relative aspect-video rounded-lg overflow-hidden bg-slate-100 dark:bg-dark-700 cursor-pointer group"
                               >
-                                <img src={pic.url} alt="" className="w-full h-full object-cover blur-sm group-hover:blur-none scale-105 group-hover:scale-100 transition-all duration-300" />
+                                <img
+                                  src={
+                                    // Always prefer B2 proxy for thumbnails to avoid Cloudinary 401/403
+                                    pic.b2Key
+                                      ? apiUrl(`/api/media/${pic.b2Key.replace(/^\/+/, '')}`)
+                                      : resolveMediaUrl(pic)
+                                  }
+                                  onError={(e) => {
+                                    if (e.target.dataset.retry) return;
+                                    e.target.dataset.retry = 'true';
+                                    // B2 failed or no b2Key — fall back to cloudinaryUrl or uploads proxy
+                                    const fallback = pic.cloudinaryUrl || (pic.url && apiUrl(pic.url)) || '';
+                                    if (fallback) e.target.src = fallback;
+                                  }}
+                                  alt=""
+                                  className="w-full h-full object-cover blur-sm group-hover:blur-none scale-105 group-hover:scale-100 transition-all duration-300"
+                                />
                                 <div className="absolute inset-0 bg-black/25 group-hover:bg-transparent transition-colors flex items-center justify-between p-1 pointer-events-none">
                                   <span className="text-[9px] font-mono text-white/90 bg-black/60 px-1 rounded">#{i + 1}</span>
                                   <span className={`w-2 h-2 rounded-full ring-1 ring-white/50 ${pic.batch === 'rewrite' ? 'bg-amber-400' : 'bg-emerald-400'}`} />
@@ -655,11 +671,19 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                 {/* Map & Narrative Preview Thumbnails */}
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                   <div
-                                    onClick={() => setBigImage({ url: gpe.mapUrl, label: `${gpe.title} (${gpe.scale || '1 cm = 2 km'}) - Map Model` })}
+                                    onClick={() => setBigImage({ url: resolveGpeMapUrl(gpe), label: `${gpe.title} (${gpe.scale || '1 cm = 2 km'}) - Map Model` })}
                                     className="relative aspect-video rounded-lg overflow-hidden bg-slate-900 cursor-pointer group border border-slate-200 dark:border-dark-700"
                                   >
                                     <img
-                                      src={gpe.mapUrl}
+                                      src={resolveGpeMapUrl(gpe)}
+                                      onError={(e) => {
+                                        if (e.target.dataset.failed) return;
+                                        e.target.dataset.failed = 'true';
+                                        if (gpe.mapUrl) {
+                                          const match = gpe.mapUrl.match(/\/([^/?#]+)[^/]*$/);
+                                          if (match && match[1]) e.target.src = apiUrl(`/api/media/gpe/${match[1]}`);
+                                        }
+                                      }}
                                       alt={gpe.title}
                                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                     />
@@ -671,11 +695,19 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
 
                                   {gpe.narrativeImageUrl ? (
                                     <div
-                                      onClick={() => setBigImage({ url: gpe.narrativeImageUrl, label: `${gpe.title} - Narrative Card` })}
+                                      onClick={() => setBigImage({ url: resolveGpeNarrativeUrl(gpe), label: `${gpe.title} - Narrative Card` })}
                                       className="relative aspect-video rounded-lg overflow-hidden bg-slate-900 cursor-pointer group border border-slate-200 dark:border-dark-700"
                                     >
                                       <img
-                                        src={gpe.narrativeImageUrl}
+                                        src={resolveGpeNarrativeUrl(gpe)}
+                                        onError={(e) => {
+                                          if (e.target.dataset.failed) return;
+                                          e.target.dataset.failed = 'true';
+                                          if (gpe.narrativeImageUrl) {
+                                            const match = gpe.narrativeImageUrl.match(/\/([^/?#]+)[^/]*$/);
+                                            if (match && match[1]) e.target.src = apiUrl(`/api/media/gpe/${match[1]}`);
+                                          }
+                                        }}
                                         alt="Narrative Card"
                                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                       />
@@ -903,10 +935,10 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                 )}
                                 {/* Video thumbnail + play */}
                                 <div
-                                  onClick={() => setVideoModal({ url: resolveMediaUrl(lec), title: lec.title })}
+                                  onClick={() => setVideoModal({ url: resolveLecturetteUrl(lec), title: lec.title })}
                                   className="aspect-video bg-black rounded-lg overflow-hidden relative cursor-pointer group flex items-center justify-center"
                                 >
-                                  <video src={resolveMediaUrl(lec)} className="w-full h-full object-cover" />
+                                  <video src={resolveLecturetteUrl(lec)} className="w-full h-full object-cover" preload="metadata" />
                                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center group-hover:bg-black/20 transition-colors">
                                     <div className="w-10 h-10 rounded-full bg-white/90 text-slate-900 flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
                                       <Play className="w-4 h-4 fill-current" />

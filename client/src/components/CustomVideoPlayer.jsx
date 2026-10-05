@@ -230,8 +230,9 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
       setDuration(v.duration);
     } else if (fallbackDuration > 0) {
       setDuration(fallbackDuration);
-    } else {
+    } else if (src && src.startsWith('blob:')) {
       // Workaround for MediaRecorder WebM duration Infinity bug in Chromium
+      // ONLY apply this to local blob URLs. Applying to network URLs breaks Range requests.
       v.currentTime = 1e101;
       v.ontimeupdate = () => {
         v.ontimeupdate = null;

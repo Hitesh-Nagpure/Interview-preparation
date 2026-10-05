@@ -147,8 +147,19 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Serve static uploaded files (local dev only)
-app.use('/uploads', express.static(uploadsDir));
+// Serve static uploaded files ONLY when the file actually exists locally.
+// If not found locally, call next() so that the B2/Firebase fallback routes below can handle it.
+// This is critical on Render where the ephemeral disk is wiped between deploys.
+app.use('/uploads', (req, res, next) => {
+  const filePath = path.join(uploadsDir, req.path);
+  if (fs.existsSync(filePath)) {
+    // File exists locally — serve with full Range support via express.static handler
+    express.static(uploadsDir)(req, res, next);
+  } else {
+    // File missing (ephemeral disk wiped) — fall through to B2/Firebase fallback routes
+    next();
+  }
+});
 
 // ── MongoDB ───────────────────────────────────────────────────────────────────
 let gfsBucket = null;
@@ -410,9 +421,12 @@ app.get('/api/folders', async (req, res) => {
         count: f.tat?.pictures?.length || 0,
         rewriteCount: f.tat?.pictures?.filter(p => p.batch === 'rewrite').length || 0,
         freshCount: f.tat?.pictures?.filter(p => p.batch !== 'rewrite').length || 0,
-        pictures: (f.tat?.pictures || []).slice(0, 8).map(p => ({
+        pictures: (f.tat?.pictures || []).map(p => ({
           id: p.id,
           url: p.url,
+          cloudinaryUrl: p.cloudinaryUrl || '',
+          b2Key: p.b2Key || '',
+          b2Url: p.b2Url || '',
           batch: p.batch || 'fresh',
           originalName: p.originalName
         })),
@@ -444,6 +458,9 @@ app.get('/api/folders', async (req, res) => {
         duration: l.duration,
         url: l.url,
         publicId: l.publicId,
+        cloudinaryUrl: l.cloudinaryUrl || '',
+        firebaseUrl: l.firebaseUrl || '',
+        b2Key: l.b2Key || '',
         recordedDate: l.recordedDate || f.dateFolder,
         recordedAt: l.recordedAt
       })),
@@ -478,9 +495,13 @@ app.get('/api/folders', async (req, res) => {
         id: g.id,
         title: g.title,
         mapUrl: g.mapUrl,
+        mapPublicId: g.mapPublicId || '',
+        mapB2Key: g.mapB2Key || '',
         scale: g.scale,
         description: g.description || '',
         narrativeImageUrl: g.narrativeImageUrl || '',
+        narrativePublicId: g.narrativePublicId || '',
+        narrativeB2Key: g.narrativeB2Key || '',
         narrativeOriginalName: g.narrativeOriginalName || '',
         modelSolution: g.modelSolution,
         solutionsCount: g.solutions?.length || 0,
@@ -1355,12 +1376,8 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
       }
     }
 
-    // 2b. Check Backblaze B2 Storage (preferred)
+    // 2b. Check Backblaze B2 Storage (preferred direct stream)
     if (solution.b2Key) {
-      if (download) {
-        const dlUrl = await getB2SignedUrl(solution.b2Key, 3600);
-        if (dlUrl) return res.redirect(dlUrl);
-      }
       const b2St = await getB2Stream(solution.b2Key);
       if (b2St) {
         res.setHeader('Content-Type', 'application/pdf');
@@ -1371,9 +1388,6 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
         b2St.stream.pipe(res);
         return;
       }
-      // If stream didn't work directly, try signed URL (returns 200 from B2)
-      const signedUrl = await getB2SignedUrl(solution.b2Key, 3600);
-      if (signedUrl) return res.redirect(signedUrl);
     }
     if (isB2Ready()) {
       const b2Key2 = `solutions/${solution.localPath || `${solution.id}.pdf`}`;
@@ -1470,6 +1484,21 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
       } catch (reconErr) {
         console.error('PDF reconstruction error:', reconErr.message);
       }
+    }
+    // 5. Last resort: pre-signed URL directly from B2
+    if (solution.b2Key) {
+      try {
+        const signedUrl = await getB2SignedUrl(solution.b2Key, 3600);
+        if (signedUrl) return res.redirect(signedUrl);
+      } catch (_) {}
+    }
+
+    // 6. Direct Cloudinary URL if it's already a native PDF
+    if (solution.cloudinaryUrl && solution.cloudinaryUrl.endsWith('.pdf')) {
+      return res.redirect(solution.cloudinaryUrl);
+    }
+    if (solution.publicId && solution.publicId.endsWith('.pdf')) {
+      return res.redirect(`https://res.cloudinary.com/${CLOUD_NAME}/image/upload/${solution.publicId}`);
     }
 
     return res.status(404).json({ error: 'PDF file not available' });
@@ -1813,17 +1842,71 @@ app.get('/uploads/lecturette-:file', async (req, res, next) => {
   const filename = 'lecturette-' + req.params.file;
   const filePath = path.join(uploadsDir, filename);
   if (fs.existsSync(filePath)) {
-    return next(); // let express.static serve it with Range support
+    return next(); // let the smart static middleware above serve it with Range support
   }
-  // 1. Try B2 first
+  // 1. Try B2 first — with full HTTP Range request support for video seeking
   if (isB2Ready()) {
-    const b2St = await getB2Stream(`lecturettes/${filename}`);
-    if (b2St) {
-      res.setHeader('Content-Type', b2St.contentType || 'video/webm');
-      res.setHeader('Accept-Ranges', 'bytes');
-      if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
-      b2St.stream.pipe(res);
-      return;
+    try {
+      const b2Key = `lecturettes/${filename}`;
+      // Check if Range header is present (browser video seek/stream)
+      const rangeHeader = req.headers['range'];
+      if (rangeHeader) {
+        // Fetch with Range to support partial content (byte-range requests)
+        const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+        const { getBucketName } = require('./b2Storage');
+        const endpoint = process.env.B2_ENDPOINT || 'https://s3.us-east-005.backblazeb2.com';
+        const region = process.env.B2_REGION || 'us-east-005';
+        const keyId = process.env.B2_KEY_ID || '005b4c93476e4610000000001';
+        const appKey = process.env.B2_APPLICATION_KEY || 'K005ivXe5R+ov97avZpjWDs6IDe7T34';
+        const bucketName = getBucketName();
+        if (bucketName) {
+          const s3 = new S3Client({
+            endpoint, region,
+            credentials: { accessKeyId: keyId, secretAccessKey: appKey },
+            forcePathStyle: true
+          });
+          try {
+            // First get full size with HeadObject
+            const { HeadObjectCommand } = require('@aws-sdk/client-s3');
+            const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: b2Key }));
+            const totalSize = head.ContentLength;
+            const contentType = head.ContentType || 'video/webm';
+            // Parse Range header
+            const parts = rangeHeader.replace(/bytes=/, '').split('-');
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 10 * 1024 * 1024 - 1, totalSize - 1);
+            const chunkSize = end - start + 1;
+            const rangeCmd = new GetObjectCommand({
+              Bucket: bucketName,
+              Key: b2Key,
+              Range: `bytes=${start}-${end}`
+            });
+            const rangeRes = await s3.send(rangeCmd);
+            res.writeHead(206, {
+              'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+              'Accept-Ranges': 'bytes',
+              'Content-Length': chunkSize,
+              'Content-Type': contentType
+            });
+            rangeRes.Body.pipe(res);
+            return;
+          } catch (rangeErr) {
+            // Fall through to full stream if range request fails
+            console.warn('B2 range request failed, falling back to full stream:', rangeErr.message);
+          }
+        }
+      }
+      // Full stream (no Range header or range failed)
+      const b2St = await getB2Stream(b2Key);
+      if (b2St) {
+        res.setHeader('Content-Type', b2St.contentType || 'video/webm');
+        res.setHeader('Accept-Ranges', 'bytes');
+        if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+        b2St.stream.pipe(res);
+        return;
+      }
+    } catch (b2Err) {
+      console.warn('B2 lecturette stream error:', b2Err.message);
     }
   }
   // 2. Try Firebase
@@ -1841,12 +1924,31 @@ app.get('/uploads/lecturette-:file', async (req, res, next) => {
     res.setHeader('Content-Type', streamData.file?.metadata?.contentType || 'video/webm');
     return streamData.stream.pipe(res);
   }
-  // 4. Try Cloudinary redirect from DB
+  // 4. Try Cloudinary redirect from DB (by url or b2Key)
   try {
     const folder = await DateFolder.findOne({ 'lecturettes.url': `/uploads/${filename}` });
     const lec = folder?.lecturettes?.find(l => l.url === `/uploads/${filename}`);
-    if (lec && lec.cloudinaryUrl && lec.cloudinaryUrl.startsWith('http')) {
-      return res.redirect(lec.cloudinaryUrl);
+    if (lec) {
+      // Prefer cloudinaryUrl; fall back to Cloudinary via publicId
+      if (lec.cloudinaryUrl && lec.cloudinaryUrl.startsWith('http')) {
+        return res.redirect(lec.cloudinaryUrl);
+      }
+      if (lec.publicId && lec.publicId.startsWith('ssb-psych-prep/')) {
+        const cloudUrl = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/${lec.publicId}`;
+        return res.redirect(cloudUrl);
+      }
+    }
+    // Also check by b2Key pattern
+    const folder2 = await DateFolder.findOne({ 'lecturettes.b2Key': `lecturettes/${filename}` });
+    const lec2 = folder2?.lecturettes?.find(l => l.b2Key === `lecturettes/${filename}`);
+    if (lec2) {
+      if (lec2.cloudinaryUrl && lec2.cloudinaryUrl.startsWith('http')) {
+        return res.redirect(lec2.cloudinaryUrl);
+      }
+      if (lec2.publicId && lec2.publicId.startsWith('ssb-psych-prep/')) {
+        const cloudUrl = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/${lec2.publicId}`;
+        return res.redirect(cloudUrl);
+      }
     }
   } catch (_) {}
   next();
@@ -1906,11 +2008,72 @@ app.get('/api/media/:type/:filename', async (req, res) => {
       }[ext] || 'application/octet-stream';
       res.setHeader('Content-Type', mime);
       res.setHeader('Cache-Control', 'public, max-age=86400');
-      return fs.createReadStream(localPath).pipe(res);
+      res.setHeader('Accept-Ranges', 'bytes');
+      // Support Range requests for local video files
+      const stat = fs.statSync(localPath);
+      const rangeHeader = req.headers['range'];
+      if (rangeHeader) {
+        const parts = rangeHeader.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+        const chunkSize = end - start + 1;
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': mime
+        });
+        fs.createReadStream(localPath, { start, end }).pipe(res);
+      } else {
+        res.setHeader('Content-Length', stat.size);
+        fs.createReadStream(localPath).pipe(res);
+      }
+      return;
     }
-    // 2. Stream from B2
+    // 2. Stream from B2 — with Range request support for videos
     if (isB2Ready()) {
       const b2Key = `${type}/${filename}`;
+      const rangeHeader = req.headers['range'];
+      if (rangeHeader) {
+        // Support byte-range streaming from B2 for video seeking
+        try {
+          const { S3Client, GetObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
+          const { getBucketName } = require('./b2Storage');
+          const endpoint = process.env.B2_ENDPOINT || 'https://s3.us-east-005.backblazeb2.com';
+          const region = process.env.B2_REGION || 'us-east-005';
+          const keyId = process.env.B2_KEY_ID || '005b4c93476e4610000000001';
+          const appKey = process.env.B2_APPLICATION_KEY || 'K005ivXe5R+ov97avZpjWDs6IDe7T34';
+          const bucketName = getBucketName();
+          if (bucketName) {
+            const s3 = new S3Client({
+              endpoint, region,
+              credentials: { accessKeyId: keyId, secretAccessKey: appKey },
+              forcePathStyle: true
+            });
+            const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: b2Key }));
+            const totalSize = head.ContentLength;
+            const contentType = head.ContentType || 'application/octet-stream';
+            const parts = rangeHeader.replace(/bytes=/, '').split('-');
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 10 * 1024 * 1024 - 1, totalSize - 1);
+            const chunkSize = end - start + 1;
+            const rangeRes = await s3.send(new GetObjectCommand({
+              Bucket: bucketName, Key: b2Key, Range: `bytes=${start}-${end}`
+            }));
+            res.writeHead(206, {
+              'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+              'Accept-Ranges': 'bytes',
+              'Content-Length': chunkSize,
+              'Content-Type': contentType
+            });
+            rangeRes.Body.pipe(res);
+            return;
+          }
+        } catch (rangeErr) {
+          console.warn('B2 range request failed in /api/media:', rangeErr.message);
+          // Fall through to full stream
+        }
+      }
       const b2St = await getB2Stream(b2Key);
       if (b2St) {
         res.setHeader('Content-Type', b2St.contentType || 'application/octet-stream');
@@ -1927,6 +2090,7 @@ app.get('/api/media/:type/:filename', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // Support nested type paths like gpe/maps, gpe/narratives, gpe/solutions
 app.get('/api/media/:type1/:type2/:filename', async (req, res) => {

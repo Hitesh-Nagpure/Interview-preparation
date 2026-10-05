@@ -383,9 +383,23 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
                 <div key={i} className="rounded overflow-hidden bg-slate-200 dark:bg-dark-700 aspect-video flex items-center justify-center">
                   {it.isBlank
                     ? <span className="text-[10px] text-slate-400 font-mono">BLANK</span>
-                    : <img src={resolveMediaUrl(it)} alt="" className="w-full h-full object-cover" />}
-                </div>
-              ))}
+                    : <img
+                        src={resolveMediaUrl(it)}
+                        alt=""
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          if (!it) return;
+                          const current = e.target.src;
+                          if (it.b2Key && !current.includes('/api/media/')) {
+                            e.target.src = apiUrl(`/api/media/${it.b2Key.replace(/^\/+/, '')}`);
+                          } else if (it.url && !current.includes(it.url)) {
+                            e.target.src = apiUrl(it.url);
+                          }
+                        }}
+                      />
+                  }
+                 </div>
+               ))}
             </div>
           ) : (
             <div className="flex flex-wrap gap-1.5">
@@ -489,7 +503,25 @@ export default function TestSimulator({ testType: testTypeProp, dateFolder, onEx
             {tatPhase === 'OBSERVE' ? (
               currentItem?.isBlank
                 ? <div className="w-full min-h-[88vh] bg-slate-50 dark:bg-black" />
-                : <img src={resolveMediaUrl(currentItem)} alt="TAT" className="w-full max-h-[88vh] object-contain" />
+                : <img
+                    key={currentItem?.id || currentIndex}
+                    src={resolveMediaUrl(currentItem)}
+                    alt="TAT"
+                    className="w-full max-h-[88vh] object-contain"
+                    onError={(e) => {
+                      if (!currentItem) return;
+                      if (e.target.dataset.failed) return;
+                      e.target.dataset.failed = 'true';
+                      if (currentItem.b2Key) {
+                        e.target.src = apiUrl(`/api/media/${currentItem.b2Key.replace(/^\/+/, '')}`);
+                      } else if (currentItem.url && !currentItem.url.startsWith('http')) {
+                        e.target.src = apiUrl(currentItem.url);
+                      } else if (currentItem.url) {
+                        const match = currentItem.url.match(/\/([^/?#]+)[^/]*$/);
+                        if (match && match[1]) e.target.src = apiUrl(`/api/media/tat/${match[1]}`);
+                      }
+                    }}
+                  />
             ) : (
               <div className="w-full min-h-[88vh] bg-slate-50 dark:bg-black" />
             )}

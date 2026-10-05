@@ -60,6 +60,8 @@ export default function PdfViewerModal({
       .then(d => {
         if (d.pages && d.pages.length > 0) {
           setPages(d.pages);
+          // Ensure available state is true if page images exist
+          setFileAvailable(true);
         }
       })
       .catch(() => {});
@@ -315,7 +317,7 @@ export default function PdfViewerModal({
 
         {/* Content Viewer Area */}
         <div className="flex-1 w-full h-full bg-slate-900 relative overflow-hidden flex flex-col">
-          {!fileAvailable ? (
+          {!fileAvailable && pages.length === 0 ? (
             /* Not Available Fallback */
             <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-slate-900">
               <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500 mb-4 shadow-lg shadow-amber-500/5">
