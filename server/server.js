@@ -1877,6 +1877,59 @@ app.get('/uploads/gpe-:file', async (req, res, next) => {
   next();
 });
 
+// Fallback: stream GPE narrative images from B2 if local file is missing
+app.get('/uploads/gpe-narrative-:file', async (req, res, next) => {
+  const filename = 'gpe-narrative-' + req.params.file;
+  const filePath = path.join(uploadsDir, filename);
+  if (fs.existsSync(filePath)) return next();
+  if (isB2Ready()) {
+    const b2St = await getB2Stream(`gpe/narratives/${filename}`);
+    if (b2St) {
+      res.setHeader('Content-Type', b2St.contentType || 'image/jpeg');
+      if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      b2St.stream.pipe(res);
+      return;
+    }
+  }
+  next();
+});
+
+// Fallback: stream GPE solution photos from B2 if local file is missing
+app.get('/uploads/gpe-solution-:file', async (req, res, next) => {
+  const filename = 'gpe-solution-' + req.params.file;
+  const filePath = path.join(uploadsDir, filename);
+  if (fs.existsSync(filePath)) return next();
+  if (isB2Ready()) {
+    const b2St = await getB2Stream(`gpe/solutions/${filename}`);
+    if (b2St) {
+      res.setHeader('Content-Type', b2St.contentType || 'image/jpeg');
+      if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      b2St.stream.pipe(res);
+      return;
+    }
+  }
+  next();
+});
+
+// Fallback: stream GPE map images from B2 if local file is missing
+app.get('/uploads/gpe-map-:file', async (req, res, next) => {
+  const filename = 'gpe-map-' + req.params.file;
+  const filePath = path.join(uploadsDir, filename);
+  if (fs.existsSync(filePath)) return next();
+  if (isB2Ready()) {
+    const b2St = await getB2Stream(`gpe/maps/${filename}`);
+    if (b2St) {
+      res.setHeader('Content-Type', b2St.contentType || 'image/jpeg');
+      if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      b2St.stream.pipe(res);
+      return;
+    }
+  }
+  next();
+});
 
 
 // 15. DELETE lecturette video by folder and lecturette ID
@@ -2117,47 +2170,63 @@ app.post('/api/folders/:dateFolder/gpes', (req, res, next) => {
     let mapPublicId = '';
     let originalMapName = mapFile ? mapFile.originalname : 'GPE_Map.jpg';
 
+    let mapB2Key = null;
     if (mapFile) {
-      if (cloudinary) {
-        const result = await uploadBufferToCloudinary(
-          mapFile.buffer,
-          mapFile.originalname,
-          'ssb-psych-prep/gpe/maps',
-          'image'
-        );
-        mapUrl = result.secure_url;
-        mapPublicId = result.public_id;
-      } else {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        const ext = path.extname(mapFile.originalname) || '.jpg';
-        const filename = 'gpe-map-' + uniqueSuffix + ext;
-        fs.writeFileSync(path.join(uploadsDir, filename), mapFile.buffer);
-        mapUrl = `/uploads/${filename}`;
-        mapPublicId = filename;
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const ext = path.extname(mapFile.originalname) || '.jpg';
+      const filename = 'gpe-map-' + uniqueSuffix + ext;
+      fs.writeFileSync(path.join(uploadsDir, filename), mapFile.buffer);
+      mapUrl = `/uploads/${filename}`;
+      mapPublicId = filename;
+      // Upload to B2 (preferred persistent storage)
+      if (isB2Ready()) {
+        try {
+          const b2Res = await uploadBufferToB2(mapFile.buffer, `gpe/maps/${filename}`, mapFile.mimetype || 'image/jpeg');
+          mapB2Key = b2Res.key;
+          console.log(`🗂️  GPE map uploaded to B2: ${mapB2Key}`);
+        } catch (b2Err) {
+          console.warn('B2 GPE map upload warning:', b2Err.message);
+        }
+      } else if (cloudinary) {
+        try {
+          const result = await uploadBufferToCloudinary(mapFile.buffer, mapFile.originalname, 'ssb-psych-prep/gpe/maps', 'image');
+          mapUrl = result.secure_url;
+          mapPublicId = result.public_id;
+        } catch (cErr) {
+          console.warn('Cloudinary GPE map upload warning:', cErr.message);
+        }
       }
     }
 
     let narrativeImageUrl = providedNarrativeUrl || '';
     let narrativePublicId = '';
+    let narrativeB2Key = null;
     let narrativeOriginalName = narrativeFile ? narrativeFile.originalname : '';
 
     if (narrativeFile) {
-      if (cloudinary) {
-        const result = await uploadBufferToCloudinary(
-          narrativeFile.buffer,
-          narrativeFile.originalname,
-          'ssb-psych-prep/gpe/narratives',
-          'image'
-        );
-        narrativeImageUrl = result.secure_url;
-        narrativePublicId = result.public_id;
-      } else {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        const ext = path.extname(narrativeFile.originalname) || '.jpg';
-        const filename = 'gpe-narrative-' + uniqueSuffix + ext;
-        fs.writeFileSync(path.join(uploadsDir, filename), narrativeFile.buffer);
-        narrativeImageUrl = `/uploads/${filename}`;
-        narrativePublicId = filename;
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const ext = path.extname(narrativeFile.originalname) || '.jpg';
+      const filename = 'gpe-narrative-' + uniqueSuffix + ext;
+      fs.writeFileSync(path.join(uploadsDir, filename), narrativeFile.buffer);
+      narrativeImageUrl = `/uploads/${filename}`;
+      narrativePublicId = filename;
+      // Upload to B2
+      if (isB2Ready()) {
+        try {
+          const b2Res = await uploadBufferToB2(narrativeFile.buffer, `gpe/narratives/${filename}`, narrativeFile.mimetype || 'image/jpeg');
+          narrativeB2Key = b2Res.key;
+          console.log(`🗂️  GPE narrative uploaded to B2: ${narrativeB2Key}`);
+        } catch (b2Err) {
+          console.warn('B2 GPE narrative upload warning:', b2Err.message);
+        }
+      } else if (cloudinary) {
+        try {
+          const result = await uploadBufferToCloudinary(narrativeFile.buffer, narrativeFile.originalname, 'ssb-psych-prep/gpe/narratives', 'image');
+          narrativeImageUrl = result.secure_url;
+          narrativePublicId = result.public_id;
+        } catch (cErr) {
+          console.warn('Cloudinary GPE narrative upload warning:', cErr.message);
+        }
       }
     }
 
@@ -2166,10 +2235,12 @@ app.post('/api/folders/:dateFolder/gpes', (req, res, next) => {
       title: (title || `GPE Exercise ${dateFolder}`).trim(),
       mapUrl,
       mapPublicId,
+      mapB2Key,
       originalMapName,
       description: (description || '').trim(),
       narrativeImageUrl,
       narrativePublicId,
+      narrativeB2Key,
       narrativeOriginalName,
       scale: (scale || '1 cm = 2 km').trim(),
       modelSolution: (modelSolution || '').trim(),
@@ -2324,23 +2395,31 @@ app.post('/api/folders/:dateFolder/gpes/:gpeId/solutions', (req, res, next) => {
     let solutionPublicId = '';
     let originalImageName = photoFile ? photoFile.originalname : '';
 
+    let solutionB2Key = null;
     if (photoFile) {
-      if (cloudinary) {
-        const result = await uploadBufferToCloudinary(
-          photoFile.buffer,
-          photoFile.originalname,
-          'ssb-psych-prep/gpe/solutions',
-          'image'
-        );
-        solutionImageUrl = result.secure_url;
-        solutionPublicId = result.public_id;
-      } else {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        const ext = path.extname(photoFile.originalname) || '.jpg';
-        const filename = 'gpe-solution-' + uniqueSuffix + ext;
-        fs.writeFileSync(path.join(uploadsDir, filename), photoFile.buffer);
-        solutionImageUrl = `/uploads/${filename}`;
-        solutionPublicId = filename;
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const ext = path.extname(photoFile.originalname) || '.jpg';
+      const filename = 'gpe-solution-' + uniqueSuffix + ext;
+      fs.writeFileSync(path.join(uploadsDir, filename), photoFile.buffer);
+      solutionImageUrl = `/uploads/${filename}`;
+      solutionPublicId = filename;
+      // Upload to B2 for persistent storage
+      if (isB2Ready()) {
+        try {
+          const b2Res = await uploadBufferToB2(photoFile.buffer, `gpe/solutions/${filename}`, photoFile.mimetype || 'image/jpeg');
+          solutionB2Key = b2Res.key;
+          console.log(`🗂️  GPE solution photo uploaded to B2: ${solutionB2Key}`);
+        } catch (b2Err) {
+          console.warn('B2 GPE solution upload warning:', b2Err.message);
+        }
+      } else if (cloudinary) {
+        try {
+          const result = await uploadBufferToCloudinary(photoFile.buffer, photoFile.originalname, 'ssb-psych-prep/gpe/solutions', 'image');
+          solutionImageUrl = result.secure_url;
+          solutionPublicId = result.public_id;
+        } catch (cErr) {
+          console.warn('Cloudinary GPE solution upload warning:', cErr.message);
+        }
       }
     }
 
@@ -2350,6 +2429,7 @@ app.post('/api/folders/:dateFolder/gpes/:gpeId/solutions', (req, res, next) => {
       solutionText: (solutionText || '').trim(),
       solutionImageUrl,
       solutionPublicId,
+      solutionB2Key,
       originalImageName,
       submittedAt: new Date()
     };
