@@ -16,6 +16,8 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
   const containerRef = useRef(null);
   const speedMenuRef = useRef(null);
 
+  const fallbackSourcesKey = Array.isArray(fallbackSources) ? fallbackSources.join('|') : '';
+
   // Build candidate sources list: try primary src, then any provided fallbackSources, plus auto .mp4/.webm variations
   const candidateSources = React.useMemo(() => {
     const list = [];
@@ -42,9 +44,16 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
       }
     }
     return list;
-  }, [src, fallbackSources]);
+  }, [src, fallbackSourcesKey]);
 
   const [candidateIndex, setCandidateIndex] = useState(0);
+
+  const activeRawSrc = candidateSources[candidateIndex] || src;
+  const resolvedSrc = activeRawSrc?.startsWith('blob:') || activeRawSrc?.startsWith('data:')
+    ? activeRawSrc
+    : (activeRawSrc ? apiUrl(activeRawSrc) : '');
+
+  const lastLoadedSrcRef = useRef('');
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -64,7 +73,7 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
   // Reset candidate index when src or fallbackSources change
   useEffect(() => {
     setCandidateIndex(0);
-  }, [src, fallbackSources]);
+  }, [src, fallbackSourcesKey]);
 
   // YouTube-like Controls State
   const [doubleTapFeedback, setDoubleTapFeedback] = useState(null); // { side: 'left'|'right', count: 5, id: number }
@@ -95,15 +104,26 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
     };
   }, []);
 
-  // Reload video element whenever active src or candidate changes
+  // Reload video element ONLY when active resolvedSrc actually changes
   useEffect(() => {
+    if (!resolvedSrc) {
+      setIsBuffering(false);
+      return;
+    }
+    if (lastLoadedSrcRef.current === resolvedSrc) {
+      return;
+    }
+    lastLoadedSrcRef.current = resolvedSrc;
+
     setIsPlaying(false);
     setCurrentTime(0);
     setHasError(false);
     setErrorMessage('');
     setIsBuffering(true);
     retryCountRef.current = 0;
-    setDuration(fallbackDuration || 0);
+    if (fallbackDuration > 0) {
+      setDuration(fallbackDuration);
+    }
     setIsLongPress2x(false);
     isLongPressActiveRef.current = false;
     setDoubleTapFeedback(null);
@@ -114,7 +134,7 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
         videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
       }
     }
-  }, [src, fallbackSources, candidateIndex, fallbackDuration]);
+  }, [resolvedSrc, autoPlay]);
 
   useEffect(() => {
     if (fallbackDuration > 0 && (!duration || isNaN(duration) || duration === Infinity)) {
@@ -270,15 +290,17 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
       setDuration(fallbackDuration);
     } else if (src && src.startsWith('blob:')) {
       // Workaround for MediaRecorder WebM duration Infinity bug in Chromium
-      // ONLY apply this to local blob URLs. Applying to network URLs breaks Range requests.
-      v.currentTime = 1e101;
-      v.ontimeupdate = () => {
-        v.ontimeupdate = null;
-        v.currentTime = 0;
-        if (v.duration && !isNaN(v.duration) && v.duration !== Infinity) {
-          setDuration(v.duration);
-        }
-      };
+      // ONLY apply this if duration is still Infinity or unknown and fallbackDuration is not available!
+      if (!v.duration || isNaN(v.duration) || v.duration === Infinity) {
+        v.currentTime = 1e101;
+        v.ontimeupdate = () => {
+          v.ontimeupdate = null;
+          v.currentTime = 0;
+          if (v.duration && !isNaN(v.duration) && v.duration !== Infinity) {
+            setDuration(v.duration);
+          }
+        };
+      }
     }
     if (autoPlay) {
       v.play().then(() => setIsPlaying(true)).catch(() => {});
@@ -390,8 +412,6 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
     }
   };
 
-  const activeRawSrc = candidateSources[candidateIndex] || src;
-  const resolvedSrc = activeRawSrc?.startsWith('blob:') || activeRawSrc?.startsWith('data:') ? activeRawSrc : apiUrl(activeRawSrc);
 
   const handleDownload = async (e) => {
     e?.stopPropagation?.();
@@ -539,6 +559,7 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
                 setIsBuffering(true);
                 retryCountRef.current = 0;
                 setCandidateIndex(0);
+                lastLoadedSrcRef.current = '';
                 if (videoRef.current) {
                   videoRef.current.load();
                   videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});

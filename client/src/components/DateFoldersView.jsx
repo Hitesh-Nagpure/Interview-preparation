@@ -938,7 +938,14 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                   onClick={() => setVideoModal({ url: resolveLecturetteUrl(lec), fallbackSources: resolveLecturetteSources(lec), title: lec.title })}
                                   className="aspect-video bg-black rounded-lg overflow-hidden relative cursor-pointer group flex items-center justify-center"
                                 >
-                                  <video src={resolveLecturetteUrl(lec)} className="w-full h-full object-cover" preload="metadata" />
+                                  <video
+                                    src={resolveLecturetteUrl(lec)}
+                                    className="w-full h-full object-cover"
+                                    preload="metadata"
+                                    muted
+                                    playsInline
+                                    onLoadedMetadata={(e) => { try { if (e.target.currentTime === 0) e.target.currentTime = 0.001; } catch (_) {} }}
+                                  />
                                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center group-hover:bg-black/20 transition-colors">
                                     <div className="w-10 h-10 rounded-full bg-white/90 text-slate-900 flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
                                       <Play className="w-4 h-4 fill-current" />

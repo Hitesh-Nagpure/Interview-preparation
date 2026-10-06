@@ -19,6 +19,15 @@ function formatTime(secs) {
 // Sub-component: video thumbnail with loading spinner
 function LectureThumbnail({ src }) {
   const [loaded, setLoaded] = React.useState(false);
+  const videoRef = React.useRef(null);
+
+  const handleLoaded = () => {
+    setLoaded(true);
+    if (videoRef.current && videoRef.current.currentTime === 0) {
+      try { videoRef.current.currentTime = 0.001; } catch (e) {}
+    }
+  };
+
   return (
     <>
       {!loaded && (
@@ -27,11 +36,14 @@ function LectureThumbnail({ src }) {
         </div>
       )}
       <video
+        ref={videoRef}
         src={src}
         className="w-full h-full object-cover"
         preload="metadata"
-        onLoadedData={() => setLoaded(true)}
-        onLoadedMetadata={() => setLoaded(true)}
+        muted
+        playsInline
+        onLoadedData={handleLoaded}
+        onLoadedMetadata={handleLoaded}
         onError={() => setLoaded(true)}
       />
     </>
@@ -378,11 +390,13 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     };
   }, []);
 
-  // Set or clear srcObject when stream changes
+  // Set or clear srcObject when stream changes (guard against redundant re-assignment which causes video flicker)
   useEffect(() => {
     if (liveVideoRef.current) {
-      // Assign the new stream, or clear it to null to fully release camera hardware
-      liveVideoRef.current.srcObject = stream || null;
+      const target = stream || null;
+      if (liveVideoRef.current.srcObject !== target) {
+        liveVideoRef.current.srcObject = target;
+      }
     }
   }, [cameraActive, recordingStatus, stream]);
 
@@ -1043,15 +1057,21 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
   };
 
-  // Aggregate past recorded lecturettes across all folders
-  const allLecturettes = folders.flatMap(f =>
-    (f.lecturettes || []).map(l => ({
-      ...l,
-      id: l.id || l._id?.toString() || l._id,
-      _id: l._id?.toString() || l.id,
-      folderDate: f.dateFolder
-    }))
-  );
+  // Aggregate past recorded lecturettes across all folders, sorted newest first
+  const allLecturettes = React.useMemo(() => {
+    return folders.flatMap(f =>
+      (f.lecturettes || []).map(l => ({
+        ...l,
+        id: l.id || l._id?.toString() || l._id,
+        _id: l._id?.toString() || l.id,
+        folderDate: f.dateFolder
+      }))
+    ).sort((a, b) => {
+      const timeA = new Date(b.recordedAt || b.recordedDate || 0).getTime();
+      const timeB = new Date(a.recordedAt || a.recordedDate || 0).getTime();
+      return timeA - timeB;
+    });
+  }, [folders]);
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">

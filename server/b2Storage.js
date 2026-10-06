@@ -163,5 +163,8 @@ module.exports = {
   getB2Stream,
   deleteFromB2,
   b2ObjectExists,
-  getBucketName: () => bucketName
+  getBucketName: () => {
+    if (!bucketName) initB2();
+    return bucketName;
+  }
 };

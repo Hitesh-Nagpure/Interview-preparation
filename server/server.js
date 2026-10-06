@@ -466,6 +466,7 @@ app.get('/api/folders', async (req, res) => {
           cloudinaryUrl: cUrl,
           firebaseUrl: l.firebaseUrl || '',
           b2Key: l.b2Key || '',
+          b2Url: l.b2Url || '',
           recordedDate: l.recordedDate || f.dateFolder,
           recordedAt: l.recordedAt
         };
@@ -1746,8 +1747,13 @@ app.post('/api/folders/:dateFolder/lecturette',
       if (isB2Ready()) {
         try {
           console.log(`🗂️  Uploading video ${filename} (${(req.file.size / (1024 * 1024)).toFixed(1)} MB) to Backblaze B2...`);
-          const fileBuf = fs.readFileSync(localFilePath);
-          const b2Res = await uploadBufferToB2(fileBuf, `lecturettes/${filename}`, req.file.mimetype || 'video/webm');
+          const ext = path.extname(filename).toLowerCase();
+          const videoMime = {
+            '.webm': 'video/webm',
+            '.mp4': 'video/mp4',
+            '.mov': 'video/quicktime'
+          }[ext] || req.file.mimetype || 'video/webm';
+          const b2Res = await uploadBufferToB2(fileBuf, `lecturettes/${filename}`, videoMime);
           b2Key = b2Res.key;
           b2Url = b2Res.publicUrl || getB2PublicUrl(b2Res.key);
           console.log(`🗂️  Backblaze B2 video upload success: ${b2Res.key}`);
@@ -1904,7 +1910,16 @@ app.get('/uploads/lecturette-:file', async (req, res, next) => {
             const { HeadObjectCommand } = require('@aws-sdk/client-s3');
             const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: b2Key }));
             const totalSize = head.ContentLength;
-            const contentType = head.ContentType || 'video/webm';
+            const ext = path.extname(filename).toLowerCase();
+            const deducedMime = {
+              '.webm': 'video/webm',
+              '.mp4': 'video/mp4',
+              '.mov': 'video/quicktime'
+            }[ext] || 'video/webm';
+            let contentType = deducedMime;
+            if (head.ContentType && head.ContentType !== 'text/plain' && head.ContentType !== 'application/octet-stream') {
+              contentType = head.ContentType;
+            }
             // Parse Range header
             const parts = rangeHeader.replace(/bytes=/, '').split('-');
             const start = parseInt(parts[0], 10);
@@ -1933,7 +1948,17 @@ app.get('/uploads/lecturette-:file', async (req, res, next) => {
       // Full stream (no Range header or range failed)
       const b2St = await getB2Stream(b2Key);
       if (b2St) {
-        res.setHeader('Content-Type', b2St.contentType || 'video/webm');
+        const ext = path.extname(filename).toLowerCase();
+        const deducedMime = {
+          '.webm': 'video/webm',
+          '.mp4': 'video/mp4',
+          '.mov': 'video/quicktime'
+        }[ext] || 'video/webm';
+        let contentType = deducedMime;
+        if (b2St.contentType && b2St.contentType !== 'text/plain' && b2St.contentType !== 'application/octet-stream') {
+          contentType = b2St.contentType;
+        }
+        res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
         if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
         b2St.stream.pipe(res);
@@ -2067,6 +2092,13 @@ app.get('/api/media/:type/:filename', async (req, res) => {
     // 2. Stream from B2 — with Range request support for videos
     if (isB2Ready()) {
       const b2Key = `${type}/${filename}`;
+      const ext = path.extname(filename).toLowerCase();
+      const deducedMime = {
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+        '.gif': 'image/gif', '.webp': 'image/webp',
+        '.webm': 'video/webm', '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+        '.pdf': 'application/pdf'
+      }[ext];
       const rangeHeader = req.headers['range'];
       if (rangeHeader) {
         // Support byte-range streaming from B2 for video seeking
@@ -2086,7 +2118,10 @@ app.get('/api/media/:type/:filename', async (req, res) => {
             });
             const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: b2Key }));
             const totalSize = head.ContentLength;
-            const contentType = head.ContentType || 'application/octet-stream';
+            let contentType = deducedMime || head.ContentType || 'application/octet-stream';
+            if ((contentType === 'text/plain' || contentType === 'application/octet-stream') && deducedMime) {
+              contentType = deducedMime;
+            }
             const parts = rangeHeader.replace(/bytes=/, '').split('-');
             const start = parseInt(parts[0], 10);
             const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 10 * 1024 * 1024 - 1, totalSize - 1);
@@ -2110,7 +2145,11 @@ app.get('/api/media/:type/:filename', async (req, res) => {
       }
       const b2St = await getB2Stream(b2Key);
       if (b2St) {
-        res.setHeader('Content-Type', b2St.contentType || 'application/octet-stream');
+        let contentType = deducedMime || b2St.contentType || 'application/octet-stream';
+        if ((contentType === 'text/plain' || contentType === 'application/octet-stream') && deducedMime) {
+          contentType = deducedMime;
+        }
+        res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Cache-Control', 'public, max-age=86400');
         if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);

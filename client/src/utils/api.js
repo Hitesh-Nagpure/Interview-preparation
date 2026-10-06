@@ -105,9 +105,11 @@ export function resolveLecturetteUrl(lec) {
   if (lec.b2Key) {
     return apiUrl(`/api/media/${lec.b2Key.replace(/^\/+/, '')}`);
   }
-  // 4. Firebase fallback
+  // 4. Backblaze direct B2 URL if available
+  if (lec.b2Url && lec.b2Url.startsWith('http')) return lec.b2Url;
+  // 5. Firebase fallback
   if (lec.firebaseUrl && lec.firebaseUrl.startsWith('http')) return lec.firebaseUrl;
-  // 5. Local uploads fallback
+  // 6. Local uploads fallback
   if (lec.url) return apiUrl(lec.url);
   return '';
 }
@@ -121,7 +123,7 @@ export function resolveLecturetteSources(lec) {
   const urls = [];
   const seen = new Set();
   const add = (u) => {
-    if (u && !seen.has(u)) {
+    if (u && typeof u === 'string' && u.trim() && !seen.has(u)) {
       seen.add(u);
       urls.push(u);
     }
@@ -142,19 +144,24 @@ export function resolveLecturetteSources(lec) {
     }
   }
 
-  // 3. Backblaze B2 proxy
+  // 3. Backblaze B2 proxy (serves from B2 with byte-range and correct video MIME)
   if (lec.b2Key) {
     add(apiUrl(`/api/media/${lec.b2Key.replace(/^\/+/, '')}`));
   }
 
-  // 4. Firebase Storage
-  if (lec.firebaseUrl && lec.firebaseUrl.startsWith('http')) {
-    add(lec.firebaseUrl);
-  }
-
-  // 5. Local uploads fallback
+  // 4. Local uploads fallback (/uploads/...)
   if (lec.url) {
     add(apiUrl(lec.url));
+  }
+
+  // 5. Direct B2 URL
+  if (lec.b2Url && lec.b2Url.startsWith('http')) {
+    add(lec.b2Url);
+  }
+
+  // 6. Firebase Storage
+  if (lec.firebaseUrl && lec.firebaseUrl.startsWith('http')) {
+    add(lec.firebaseUrl);
   }
 
   return urls;
