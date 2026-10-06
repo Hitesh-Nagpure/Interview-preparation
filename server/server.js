@@ -451,19 +451,25 @@ app.get('/api/folders', async (req, res) => {
         uploadedAt: s.uploadedAt
       })),
       lecturettesCount: f.lecturettes?.length || 0,
-      lecturettes: (f.lecturettes || []).map(l => ({
-        id: l.id || l._id?.toString() || l._id,
-        _id: l._id?.toString() || l.id,
-        title: l.title,
-        duration: l.duration,
-        url: l.url,
-        publicId: l.publicId,
-        cloudinaryUrl: l.cloudinaryUrl || '',
-        firebaseUrl: l.firebaseUrl || '',
-        b2Key: l.b2Key || '',
-        recordedDate: l.recordedDate || f.dateFolder,
-        recordedAt: l.recordedAt
-      })),
+      lecturettes: (f.lecturettes || []).map(l => {
+        let cUrl = l.cloudinaryUrl || '';
+        if (!cUrl && l.publicId && typeof l.publicId === 'string' && l.publicId.startsWith('ssb-psych-prep/')) {
+          cUrl = `https://res.cloudinary.com/${CLOUD_NAME || 'bn8zsmom'}/video/upload/${l.publicId.replace(/\.(mp4|webm)$/i, '')}.mp4`;
+        }
+        return {
+          id: l.id || l._id?.toString() || l._id,
+          _id: l._id?.toString() || l.id,
+          title: l.title,
+          duration: l.duration,
+          url: l.url,
+          publicId: l.publicId,
+          cloudinaryUrl: cUrl,
+          firebaseUrl: l.firebaseUrl || '',
+          b2Key: l.b2Key || '',
+          recordedDate: l.recordedDate || f.dateFolder,
+          recordedAt: l.recordedAt
+        };
+      }),
       reviewsCount: f.reviews?.length || 0,
       reviews: (f.reviews || []).map(r => ({
         id: r.id,
@@ -1790,6 +1796,34 @@ app.post('/api/folders/:dateFolder/lecturette',
         folder
       });
 
+      // Asynchronously mirror lecturette to Cloudinary for resilient CDN playback
+      if (cloudinary && fs.existsSync(localFilePath)) {
+        (async () => {
+          try {
+            console.log(`☁️  Mirroring lecturette ${filename} to Cloudinary...`);
+            const fileBuf = fs.readFileSync(localFilePath);
+            const cRes = await uploadBufferToCloudinary(
+              fileBuf,
+              filename,
+              'ssb-psych-prep/lecturettes',
+              'video'
+            );
+            if (cRes?.secure_url) {
+              console.log(`☁️  Cloudinary video mirror success: ${cRes.secure_url}`);
+              const curFolder = await DateFolder.findOne({ dateFolder });
+              const curLec = curFolder?.lecturettes?.find(l => l.id === newLecId);
+              if (curLec) {
+                curLec.cloudinaryUrl = cRes.secure_url;
+                curLec.publicId = cRes.public_id;
+                await curFolder.save();
+              }
+            }
+          } catch (cErr) {
+            console.warn('Cloudinary lecturette mirror warning:', cErr.message);
+          }
+        })();
+      }
+
       // Fallback: If B2 was not ready, write to Firebase / GridFS in background
       if (!isB2Ready() && isFirebaseReady()) {
         (async () => {
@@ -2084,6 +2118,46 @@ app.get('/api/media/:type/:filename', async (req, res) => {
         return;
       }
     }
+
+    // 3. Fallback: stream or redirect from Cloudinary / Firebase if B2 is unavailable
+    try {
+      if (type === 'lecturettes') {
+        const folder = await DateFolder.findOne({
+          $or: [
+            { 'lecturettes.b2Key': `lecturettes/${filename}` },
+            { 'lecturettes.url': `/uploads/${filename}` },
+            { 'lecturettes.url': { $regex: filename } },
+            { 'lecturettes.publicId': filename.replace(/\.[^/.]+$/, '') }
+          ]
+        });
+        const lec = folder?.lecturettes?.find(l =>
+          l.b2Key === `lecturettes/${filename}` ||
+          l.url?.includes(filename) ||
+          l.publicId === filename ||
+          l.publicId === filename.replace(/\.[^/.]+$/, '')
+        );
+        if (lec) {
+          if (lec.cloudinaryUrl && lec.cloudinaryUrl.startsWith('http')) {
+            return res.redirect(lec.cloudinaryUrl);
+          }
+          if (lec.publicId && typeof lec.publicId === 'string' && lec.publicId.startsWith('ssb-psych-prep/')) {
+            const cleanId = lec.publicId.replace(/\.(mp4|webm)$/i, '');
+            return res.redirect(`https://res.cloudinary.com/${CLOUD_NAME || 'bn8zsmom'}/video/upload/${cleanId}.mp4`);
+          }
+          if (lec.firebaseUrl && isFirebaseReady()) {
+            const fbStream = await getFirebaseStream(`lecturettes/${filename}`);
+            if (fbStream) {
+              res.setHeader('Content-Type', fbStream.contentType || 'video/webm');
+              res.setHeader('Accept-Ranges', 'bytes');
+              return fbStream.stream.pipe(res);
+            }
+          }
+        }
+      }
+    } catch (fbErr) {
+      console.warn('Fallback stream error in /api/media:', fbErr.message);
+    }
+
     res.status(404).json({ error: 'Media not found' });
   } catch (err) {
     console.warn('Media proxy error:', err.message);
@@ -2137,9 +2211,15 @@ app.get('/uploads/gpe-:file', async (req, res, next) => {
     return next();
   }
   if (isB2Ready()) {
-    const b2St = await getB2Stream(`gpe/maps/${filename}`);
+    let b2Folder = 'gpe/maps';
+    if (filename.startsWith('gpe-narrative-')) {
+      b2Folder = 'gpe/narratives';
+    } else if (filename.startsWith('gpe-solution-')) {
+      b2Folder = 'gpe/solutions';
+    }
+    const b2St = await getB2Stream(`${b2Folder}/${filename}`);
     if (b2St) {
-      res.setHeader('Content-Type', b2St.contentType || 'image/png');
+      res.setHeader('Content-Type', b2St.contentType || 'image/jpeg');
       if (b2St.contentLength) res.setHeader('Content-Length', b2St.contentLength);
       res.setHeader('Cache-Control', 'public, max-age=86400');
       b2St.stream.pipe(res);

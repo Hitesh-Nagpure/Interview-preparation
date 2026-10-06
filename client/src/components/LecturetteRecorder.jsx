@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import CustomVideoPlayer from './CustomVideoPlayer';
 import { soundEngine } from '../utils/audio';
-import { apiUrl, resolveMediaUrl } from '../utils/api';
+import { apiUrl, resolveMediaUrl, resolveLecturetteUrl, resolveLecturetteSources } from '../utils/api';
 
 function formatTime(secs) {
   if (isNaN(secs) || secs === Infinity || secs < 0) return '00:00';
@@ -1526,7 +1526,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   className="aspect-video bg-black rounded-md overflow-hidden relative cursor-pointer flex items-center justify-center group-hover:opacity-90"
                 >
                   {/* Video thumbnail with loading spinner */}
-                  <LectureThumbnail src={resolveMediaUrl(lec)} />
+                  <LectureThumbnail src={resolveLecturetteUrl(lec)} />
                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
                     <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center pl-0.5 shadow-md group-hover:scale-110 transition-transform">
                       <Play className="w-4 h-4 fill-current" />
@@ -1545,7 +1545,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <button
-                      onClick={() => handleDownloadUrl(resolveMediaUrl(lec), lec.title)}
+                      onClick={() => handleDownloadUrl(resolveLecturetteUrl(lec), lec.title)}
                       className="p-1.5 rounded text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
                       title="Download video"
                     >
@@ -1581,7 +1581,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
               <span className="text-xs font-bold truncate">{playingVideo.title}</span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleDownloadUrl(resolveMediaUrl(playingVideo), playingVideo.title)}
+                  onClick={() => handleDownloadUrl(resolveLecturetteUrl(playingVideo), playingVideo.title)}
                   className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs flex items-center gap-1 transition-colors"
                   title="Download video"
                 >
@@ -1598,7 +1598,8 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
             </div>
             <div className="p-3">
               <CustomVideoPlayer
-                src={resolveMediaUrl(playingVideo)}
+                src={resolveLecturetteUrl(playingVideo)}
+                fallbackSources={resolveLecturetteSources(playingVideo)}
                 autoPlay={true}
                 downloadFilename={(playingVideo.title || 'lecturette-video').replace(/[^a-zA-Z0-9_-]/g, '_')}
                 className="w-full aspect-video rounded bg-black"

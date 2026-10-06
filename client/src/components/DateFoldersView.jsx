@@ -10,7 +10,7 @@ import {
 import PdfViewerModal from './PdfViewerModal';
 import CustomVideoPlayer from './CustomVideoPlayer';
 import NotesEditor from './NotesEditor';
-import { apiUrl, resolveMediaUrl, resolveLecturetteUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
+import { apiUrl, resolveMediaUrl, resolveLecturetteUrl, resolveLecturetteSources, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl } from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 function formatBytes(bytes) {
@@ -935,7 +935,7 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
                                 )}
                                 {/* Video thumbnail + play */}
                                 <div
-                                  onClick={() => setVideoModal({ url: resolveLecturetteUrl(lec), title: lec.title })}
+                                  onClick={() => setVideoModal({ url: resolveLecturetteUrl(lec), fallbackSources: resolveLecturetteSources(lec), title: lec.title })}
                                   className="aspect-video bg-black rounded-lg overflow-hidden relative cursor-pointer group flex items-center justify-center"
                                 >
                                   <video src={resolveLecturetteUrl(lec)} className="w-full h-full object-cover" preload="metadata" />
@@ -1391,7 +1391,9 @@ export default function DateFoldersView({ folders, onStartTest, onNavigate, onDe
             <div className="p-3">
               <CustomVideoPlayer
                 src={videoModal.url}
+                fallbackSources={videoModal.fallbackSources}
                 autoPlay={true}
+                downloadFilename={videoModal.title}
                 className="w-full aspect-video rounded bg-black"
               />
             </div>

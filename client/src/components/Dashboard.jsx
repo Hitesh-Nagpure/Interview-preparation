@@ -9,7 +9,8 @@ export default function Dashboard({ folders, onStartTest, onNavigate }) {
   const totalLecturettes = folders.reduce((a, f) => a + (f.lecturettes?.length || 0), 0);
   const totalSolutions = folders.reduce((a, f) => a + (f.solutions?.length || 0), 0);
   const latest = folders[0] || null;
-  const latestGpe = latest?.gpes?.[0] || null;
+  const folderWithGpe = folders.find(f => (f.gpes || []).length > 0) || folders[0] || null;
+  const latestGpe = folderWithGpe?.gpes?.[0] || null;
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-6">
@@ -170,7 +171,7 @@ export default function Dashboard({ folders, onStartTest, onNavigate }) {
 
           {latestGpe ? (
             <p className="text-xs text-slate-400">
-              {latest.dateFolder} · <span className="text-blue-500 font-semibold">{latestGpe.title}</span> ({latestGpe.scale || '1 cm = 2 km'})
+              {folderWithGpe?.dateFolder} · <span className="text-blue-500 font-semibold">{latestGpe.title}</span> ({latestGpe.scale || '1 cm = 2 km'})
             </p>
           ) : totalGpes > 0 ? (
             <p className="text-xs text-slate-400">
@@ -182,7 +183,7 @@ export default function Dashboard({ folders, onStartTest, onNavigate }) {
 
           <div className="flex gap-2 pt-1">
             <button
-              onClick={() => onStartTest('GPE', latest?.dateFolder, latestGpe?.id)}
+              onClick={() => onStartTest('GPE', folderWithGpe?.dateFolder, latestGpe?.id, latestGpe)}
               disabled={!latestGpe && totalGpes === 0}
               className="bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-md px-3.5 py-1.5 text-xs transition-colors flex items-center justify-center gap-1.5 disabled:opacity-40"
             >

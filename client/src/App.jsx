@@ -136,12 +136,18 @@ export default function App() {
     };
   }, []);
 
-  const handleStartTest = (testType, dateFolder, gpeId = null) => {
+  const handleStartTest = (testType, dateFolder, gpeId = null, initialGpe = null) => {
     const df = dateFolder || folders[0]?.dateFolder;
     if (!df) { alert('No batch found. Upload one first.'); return; }
+    const resolvedGpe = initialGpe || (
+      testType === 'GPE'
+        ? (folders.find(f => f.dateFolder === df)?.gpes || []).find(g => g.id === gpeId || g._id === gpeId) ||
+          folders.flatMap(f => f.gpes || []).find(g => g.id === gpeId || g._id === gpeId)
+        : null
+    );
     // Set hash to #test so browser back button exits the test
     window.location.hash = 'test';
-    setActiveTest({ testType, dateFolder: df, gpeId });
+    setActiveTest({ testType, dateFolder: df, gpeId, initialGpe: resolvedGpe });
   };
 
   const handleExitTest = () => {
@@ -188,6 +194,7 @@ export default function App() {
         <GpeSimulator
           gpeId={activeTest.gpeId}
           dateFolder={activeTest.dateFolder}
+          initialGpe={activeTest.initialGpe}
           onExit={handleExitTest}
           isDark={isDark}
           toggleTheme={() => setIsDark(d => !d)}

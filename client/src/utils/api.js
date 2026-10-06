@@ -71,8 +71,10 @@ export function resolveMediaUrl(item, urlField = 'url') {
   // 2. Cloudinary via public ID (only genuine ssb-psych-prep/ prefixed IDs)
   if (item.publicId && isCloudinaryPublicId(item.publicId)) {
     // Lecturette and review videos use /video/upload/, everything else uses /image/upload/
-    const resourceType = (item.publicId.includes('/lecturettes/') || item.publicId.includes('/reviews/')) ? 'video' : 'image';
-    return `https://res.cloudinary.com/bn8zsmom/${resourceType}/upload/${item.publicId}`;
+    const isVideo = item.publicId.includes('/lecturettes/') || item.publicId.includes('/reviews/');
+    const resourceType = isVideo ? 'video' : 'image';
+    const ext = isVideo && !item.publicId.match(/\.(mp4|webm|mov|ogg)$/i) ? '.mp4' : '';
+    return `https://res.cloudinary.com/bn8zsmom/${resourceType}/upload/${item.publicId}${ext}`;
   }
   // 3. Firebase Storage URL
   if (item.firebaseUrl && item.firebaseUrl.startsWith('http')) return item.firebaseUrl;
@@ -86,61 +88,167 @@ export function resolveMediaUrl(item, urlField = 'url') {
 }
 
 /**
- * Resolves the best URL for a lecturette video, always preferring B2 proxy
- * over Cloudinary. Cloudinary does not properly support HTTP Range requests
- * for seeking in WebM videos — the browser gets a 200 (full stream) instead
- * of a 206 (partial), causing the video to restart from the beginning.
- * B2 via our backend proxy (/api/media/...) correctly returns 206 Partial Content.
+ * Resolves the primary URL for a lecturette video.
+ * Uses Cloudinary (with .mp4 transcode for universal browser compatibility and byte-range seeking)
+ * or B2 proxy / Firebase / local upload as fallback.
  */
 export function resolveLecturetteUrl(lec) {
   if (!lec) return '';
-  // Always prefer B2 proxy for seeking support
+  // 1. Valid direct Cloudinary URL
+  if (isValidCloudinaryUrl(lec.cloudinaryUrl)) return lec.cloudinaryUrl;
+  // 2. Cloudinary via public ID with .mp4 extension for universal browser playback and seeking
+  if (lec.publicId && isCloudinaryPublicId(lec.publicId)) {
+    const cleanId = lec.publicId.replace(/\.(mp4|webm)$/i, '');
+    return `https://res.cloudinary.com/bn8zsmom/video/upload/${cleanId}.mp4`;
+  }
+  // 3. Backblaze B2 proxy via backend
   if (lec.b2Key) {
     return apiUrl(`/api/media/${lec.b2Key.replace(/^\/+/, '')}`);
   }
-  // Firebase fallback
+  // 4. Firebase fallback
   if (lec.firebaseUrl && lec.firebaseUrl.startsWith('http')) return lec.firebaseUrl;
-  // Cloudinary last resort (seeking won't work well but at least it plays)
-  if (isValidCloudinaryUrl(lec.cloudinaryUrl)) return lec.cloudinaryUrl;
-  if (lec.publicId && isCloudinaryPublicId(lec.publicId)) {
-    return `https://res.cloudinary.com/bn8zsmom/video/upload/${lec.publicId}`;
-  }
-  // Local uploads fallback
+  // 5. Local uploads fallback
   if (lec.url) return apiUrl(lec.url);
   return '';
 }
 
 /**
+ * Resolves an ordered list of candidate URLs for a lecturette video.
+ * Used by CustomVideoPlayer to gracefully fall back if the primary source fails.
+ */
+export function resolveLecturetteSources(lec) {
+  if (!lec) return [];
+  const urls = [];
+  const seen = new Set();
+  const add = (u) => {
+    if (u && !seen.has(u)) {
+      seen.add(u);
+      urls.push(u);
+    }
+  };
+
+  // 1. Cloudinary MP4 (universal compatibility & seeking support)
+  if (lec.publicId && isCloudinaryPublicId(lec.publicId)) {
+    const cleanId = lec.publicId.replace(/\.(mp4|webm)$/i, '');
+    add(`https://res.cloudinary.com/bn8zsmom/video/upload/${cleanId}.mp4`);
+    add(`https://res.cloudinary.com/bn8zsmom/video/upload/${cleanId}.webm`);
+  }
+
+  // 2. Direct Cloudinary URL
+  if (isValidCloudinaryUrl(lec.cloudinaryUrl)) {
+    add(lec.cloudinaryUrl);
+    if (lec.cloudinaryUrl.includes('.webm')) {
+      add(lec.cloudinaryUrl.replace('.webm', '.mp4'));
+    }
+  }
+
+  // 3. Backblaze B2 proxy
+  if (lec.b2Key) {
+    add(apiUrl(`/api/media/${lec.b2Key.replace(/^\/+/, '')}`));
+  }
+
+  // 4. Firebase Storage
+  if (lec.firebaseUrl && lec.firebaseUrl.startsWith('http')) {
+    add(lec.firebaseUrl);
+  }
+
+  // 5. Local uploads fallback
+  if (lec.url) {
+    add(apiUrl(lec.url));
+  }
+
+  return urls;
+}
+
+/**
  * Resolves the best available URL for a GPE map image.
- * Priority: Cloudinary mapUrl → Cloudinary publicId → primary mapUrl (/uploads/...) → backend B2 proxy
+ * Priority: backend B2 proxy → Cloudinary mapUrl → Cloudinary publicId → primary mapUrl (/uploads/...)
  */
 export function resolveGpeMapUrl(gpe) {
   if (!gpe) return '';
+  if (gpe.mapB2Key) return apiUrl(`/api/media/${gpe.mapB2Key.replace(/^\/+/, '')}`);
   if (gpe.mapUrl && gpe.mapUrl.startsWith('http')) return gpe.mapUrl;
   if (gpe.mapPublicId && isCloudinaryPublicId(gpe.mapPublicId)) {
     return `https://res.cloudinary.com/bn8zsmom/image/upload/${gpe.mapPublicId}`;
   }
   if (gpe.mapUrl) return apiUrl(gpe.mapUrl);
-  if (gpe.mapB2Key) return apiUrl(`/api/media/${gpe.mapB2Key.replace(/^\/+/, '')}`);
+  if (gpe.mapGridFsId && gpe.mapGridFsId !== 'null') {
+    return apiUrl(`/api/media/gridfs/${gpe.mapGridFsId}`);
+  }
   return '';
 }
 
 /**
+ * Returns an ordered array of fallback URLs for a GPE map.
+ */
+export function resolveGpeMapSources(gpe) {
+  if (!gpe) return [];
+  const urls = [];
+  const seen = new Set();
+  const add = (u) => {
+    if (u && !seen.has(u)) {
+      seen.add(u);
+      urls.push(u);
+    }
+  };
+
+  if (gpe.mapB2Key) add(apiUrl(`/api/media/${gpe.mapB2Key.replace(/^\/+/, '')}`));
+  if (gpe.mapUrl) add(apiUrl(gpe.mapUrl));
+  if (gpe.mapPublicId && isCloudinaryPublicId(gpe.mapPublicId)) {
+    add(`https://res.cloudinary.com/bn8zsmom/image/upload/${gpe.mapPublicId}`);
+  }
+  if (gpe.mapGridFsId && gpe.mapGridFsId !== 'null') {
+    add(apiUrl(`/api/media/gridfs/${gpe.mapGridFsId}`));
+  }
+  return urls;
+}
+
+/**
  * Resolves the best available URL for a GPE narrative image.
+ * Priority: backend B2 proxy → Cloudinary narrativeImageUrl → Cloudinary publicId → primary narrativeImageUrl (/uploads/...)
  */
 export function resolveGpeNarrativeUrl(gpe) {
   if (!gpe) return '';
+  if (gpe.narrativeB2Key) return apiUrl(`/api/media/${gpe.narrativeB2Key.replace(/^\/+/, '')}`);
   if (gpe.narrativeImageUrl && gpe.narrativeImageUrl.startsWith('http')) return gpe.narrativeImageUrl;
   if (gpe.narrativePublicId && isCloudinaryPublicId(gpe.narrativePublicId)) {
     return `https://res.cloudinary.com/bn8zsmom/image/upload/${gpe.narrativePublicId}`;
   }
   if (gpe.narrativeImageUrl) return apiUrl(gpe.narrativeImageUrl);
-  if (gpe.narrativeB2Key) return apiUrl(`/api/media/${gpe.narrativeB2Key.replace(/^\/+/, '')}`);
+  if (gpe.narrativeGridFsId && gpe.narrativeGridFsId !== 'null') {
+    return apiUrl(`/api/media/gridfs/${gpe.narrativeGridFsId}`);
+  }
   return '';
 }
 
 /**
+ * Returns an ordered array of fallback URLs for a GPE narrative image.
+ */
+export function resolveGpeNarrativeSources(gpe) {
+  if (!gpe) return [];
+  const urls = [];
+  const seen = new Set();
+  const add = (u) => {
+    if (u && !seen.has(u)) {
+      seen.add(u);
+      urls.push(u);
+    }
+  };
+
+  if (gpe.narrativeB2Key) add(apiUrl(`/api/media/${gpe.narrativeB2Key.replace(/^\/+/, '')}`));
+  if (gpe.narrativeImageUrl) add(apiUrl(gpe.narrativeImageUrl));
+  if (gpe.narrativePublicId && isCloudinaryPublicId(gpe.narrativePublicId)) {
+    add(`https://res.cloudinary.com/bn8zsmom/image/upload/${gpe.narrativePublicId}`);
+  }
+  if (gpe.narrativeGridFsId && gpe.narrativeGridFsId !== 'null') {
+    add(apiUrl(`/api/media/gridfs/${gpe.narrativeGridFsId}`));
+  }
+  return urls;
+}
+
+/**
  * Resolves the best available URL for a GPE candidate solution photo.
+ * Priority: direct URL / blob / data → Cloudinary publicId → backend B2 proxy → solutionImageUrl
  */
 export function resolveGpeSolutionUrl(sol) {
   if (!sol) return '';
@@ -155,7 +263,7 @@ export function resolveGpeSolutionUrl(sol) {
   if (sol.solutionPublicId && isCloudinaryPublicId(sol.solutionPublicId)) {
     return `https://res.cloudinary.com/bn8zsmom/image/upload/${sol.solutionPublicId}`;
   }
-  if (sol.solutionImageUrl) return apiUrl(sol.solutionImageUrl);
   if (sol.solutionB2Key) return apiUrl(`/api/media/${sol.solutionB2Key.replace(/^\/+/, '')}`);
+  if (sol.solutionImageUrl) return apiUrl(sol.solutionImageUrl);
   return '';
 }

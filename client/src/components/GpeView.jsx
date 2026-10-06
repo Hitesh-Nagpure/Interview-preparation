@@ -313,6 +313,15 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                         src={resolveGpeMapUrl(gpe)}
                         alt={gpe.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        onError={(e) => {
+                          if (gpe.mapB2Key && !e.target.src.includes('/api/media/')) {
+                            e.target.src = apiUrl(`/api/media/${gpe.mapB2Key.replace(/^\/+/, '')}`);
+                          } else if (gpe.mapPublicId && isCloudinaryPublicId(gpe.mapPublicId) && !e.target.src.includes('cloudinary.com')) {
+                            e.target.src = `https://res.cloudinary.com/bn8zsmom/image/upload/${gpe.mapPublicId}`;
+                          } else if (gpe.mapUrl && !e.target.src.includes(gpe.mapUrl)) {
+                            e.target.src = apiUrl(gpe.mapUrl);
+                          }
+                        }}
                       />
                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-bold">
                         <ZoomIn className="w-4 h-4" />
@@ -329,6 +338,15 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                           src={resolveGpeNarrativeUrl(gpe)}
                           alt="Narrative Card"
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          onError={(e) => {
+                            if (gpe.narrativeB2Key && !e.target.src.includes('/api/media/')) {
+                              e.target.src = apiUrl(`/api/media/${gpe.narrativeB2Key.replace(/^\/+/, '')}`);
+                            } else if (gpe.narrativePublicId && isCloudinaryPublicId(gpe.narrativePublicId) && !e.target.src.includes('cloudinary.com')) {
+                              e.target.src = `https://res.cloudinary.com/bn8zsmom/image/upload/${gpe.narrativePublicId}`;
+                            } else if (gpe.narrativeImageUrl && !e.target.src.includes(gpe.narrativeImageUrl)) {
+                              e.target.src = apiUrl(gpe.narrativeImageUrl);
+                            }
+                          }}
                         />
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-bold">
                           <ZoomIn className="w-4 h-4" />
@@ -444,7 +462,7 @@ export default function GpeView({ folders, onStartTest, onNavigate, onRefresh })
                 {/* Launch Action Controls */}
                 <div className="pt-3 border-t border-slate-100 dark:border-dark-700 flex items-center gap-2 flex-wrap">
                   <button
-                    onClick={() => onStartTest('GPE', gpe.dateFolder, gpe.id)}
+                    onClick={() => onStartTest('GPE', gpe.dateFolder, gpe.id, gpe)}
                     className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg px-4 py-2 text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all transform hover:-translate-y-0.5 active:translate-y-0 min-w-[160px]"
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />

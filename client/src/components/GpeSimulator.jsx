@@ -3,23 +3,33 @@ import {
   Compass, Map, FileText, ArrowLeft, ArrowRight, CheckCircle2,
   ZoomIn, ZoomOut, Maximize2, Minimize2, Check, Download,
   AlertCircle, Eye, Sun, Moon, Camera, Upload, Trash2, RotateCcw,
-  Image as ImageIcon, ChevronDown, ChevronUp, User, Sparkles, Move
+  Image as ImageIcon, ChevronDown, ChevronUp, User, Sparkles, Move,
+  Columns
 } from 'lucide-react';
 import { soundEngine } from '../utils/audio';
-import { apiUrl, resolveGpeMapUrl, resolveGpeNarrativeUrl, resolveGpeSolutionUrl, isCloudinaryPublicId } from '../utils/api';
+import {
+  apiUrl,
+  resolveGpeMapUrl,
+  resolveGpeMapSources,
+  resolveGpeNarrativeUrl,
+  resolveGpeNarrativeSources,
+  resolveGpeSolutionUrl,
+  isCloudinaryPublicId
+} from '../utils/api';
 import PanZoomModal from './PanZoomModal';
 
 export default function GpeSimulator({
   gpeId,
   dateFolder,
+  initialGpe,
   onExit,
   isDark,
   toggleTheme
 }) {
   // Data state
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialGpe);
   const [error, setError] = useState(null);
-  const [gpe, setGpe] = useState(null);
+  const [gpe, setGpe] = useState(initialGpe || null);
 
   // Phases:
   // 'BRIEFING'   -> Stage 1: Map and Narrative shown for UNLIMITED time (candidate reads at own pace)
@@ -33,11 +43,24 @@ export default function GpeSimulator({
   const [isRunning, setIsRunning] = useState(false);
   const [warningBellRung, setWarningBellRung] = useState(false);
 
-  // Narrative view toggle if both text and image are available: 'text' | 'image'
-  const [narrativeTab, setNarrativeTab] = useState('text');
+  // Narrative view toggle if both text and image are available: 'image' | 'text'
+  const [narrativeTab, setNarrativeTab] = useState(() => {
+    if (initialGpe) {
+      const hasImg = Boolean(
+        initialGpe.narrativeB2Key ||
+        initialGpe.narrativeImageUrl ||
+        (initialGpe.narrativePublicId && isCloudinaryPublicId(initialGpe.narrativePublicId))
+      );
+      if (hasImg) return 'image';
+    }
+    return 'image';
+  });
 
-  // Active view on main workspace: 'map' | 'narrative'
-  const [activeWorkspaceView, setActiveWorkspaceView] = useState('map');
+  // Workspace layout view: 'split' (side-by-side) | 'map' (full map) | 'narrative' (full narrative card)
+  const [workspaceView, setWorkspaceView] = useState('split');
+
+  // Completed Phase 4 tab: 'upload' | 'narrative'
+  const [completedTab, setCompletedTab] = useState('upload');
 
   // Map mouse zoom and pan controls
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -68,9 +91,34 @@ export default function GpeSimulator({
   const containerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Fallback candidate URL tracking on error
+  const handleMapImageError = (e) => {
+    if (!gpe) return;
+    const sources = resolveGpeMapSources(gpe);
+    const currentIndex = parseInt(e.target.dataset.attemptIndex || '0', 10);
+    const nextIndex = currentIndex + 1;
+    if (nextIndex < sources.length) {
+      e.target.dataset.attemptIndex = String(nextIndex);
+      e.target.src = sources[nextIndex];
+    }
+  };
+
+  const handleNarrativeImageError = (e) => {
+    if (!gpe) return;
+    const sources = resolveGpeNarrativeSources(gpe);
+    const currentIndex = parseInt(e.target.dataset.attemptIndex || '0', 10);
+    const nextIndex = currentIndex + 1;
+    if (nextIndex < sources.length) {
+      e.target.dataset.attemptIndex = String(nextIndex);
+      e.target.src = sources[nextIndex];
+    }
+  };
+
   // Fetch GPE data
   useEffect(() => {
     let isMounted = true;
+    if (!dateFolder) return;
+
     fetch(apiUrl(`/api/folders/${encodeURIComponent(dateFolder)}`))
       .then(res => {
         if (!res.ok) throw new Error('Could not load batch data');
@@ -79,13 +127,17 @@ export default function GpeSimulator({
       .then(data => {
         if (!isMounted) return;
         const gpes = data.gpes || [];
-        const found = gpeId ? gpes.find(g => g.id === gpeId || g._id === gpeId) : gpes[0];
-        if (!found) {
+        const found = gpeId ? gpes.find(g => g.id === gpeId || g._id === gpeId) : (gpes[0] || initialGpe);
+        if (!found && !initialGpe) {
           setError('No Group Planning Exercise found in this batch.');
-        } else {
+        } else if (found) {
           setGpe(found);
-          // Set initial narrative tab preference
-          if (!found.description?.trim() && found.narrativeImageUrl) {
+          const hasImg = Boolean(
+            found.narrativeB2Key ||
+            found.narrativeImageUrl ||
+            (found.narrativePublicId && isCloudinaryPublicId(found.narrativePublicId))
+          );
+          if (hasImg) {
             setNarrativeTab('image');
           } else {
             setNarrativeTab('text');
@@ -95,12 +147,14 @@ export default function GpeSimulator({
       })
       .catch(err => {
         if (!isMounted) return;
-        setError(err.message);
+        if (!initialGpe) {
+          setError(err.message);
+        }
         setLoading(false);
       });
 
     return () => { isMounted = false; };
-  }, [dateFolder, gpeId]);
+  }, [dateFolder, gpeId, initialGpe]);
 
   // Handle browser back button to exit
   useEffect(() => {
@@ -400,8 +454,53 @@ export default function GpeSimulator({
           )}
         </div>
 
-        {/* Right: Controls & Theme Toggle */}
+        {/* Right: Layout Controls, Actions & Theme Toggle */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Workspace Layout Toggle: Split / Map / Narrative */}
+          <div className={`hidden sm:flex items-center p-0.5 rounded-lg border text-xs mr-1 ${
+            isDark ? 'bg-dark-800 border-dark-700' : 'bg-slate-100 border-slate-300'
+          }`}>
+            <button
+              type="button"
+              onClick={() => setWorkspaceView('split')}
+              className={`px-2.5 py-1 rounded-md font-semibold text-[11px] flex items-center gap-1 transition-all ${
+                workspaceView === 'split'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : isDark ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="Side-by-side Split View (Map + Narrative)"
+            >
+              <Columns className="w-3 h-3" />
+              <span>Split</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceView('map')}
+              className={`px-2.5 py-1 rounded-md font-semibold text-[11px] flex items-center gap-1 transition-all ${
+                workspaceView === 'map'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : isDark ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="View Map Model Only"
+            >
+              <Map className="w-3 h-3" />
+              <span>Map</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceView('narrative')}
+              className={`px-2.5 py-1 rounded-md font-semibold text-[11px] flex items-center gap-1 transition-all ${
+                workspaceView === 'narrative'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : isDark ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="View Narrative Card Only"
+            >
+              <FileText className="w-3 h-3" />
+              <span>Narrative</span>
+            </button>
+          </div>
+
           {/* Phase 1 Action: Start 5-min observation */}
           {phase === 'BRIEFING' && (
             <button
@@ -495,12 +594,19 @@ export default function GpeSimulator({
           const currentSolutionUrl = currentSolution ? resolveGpeSolutionUrl(currentSolution) : null;
           const isViewingSolution = activeCanvasView === 'solution' && Boolean(currentSolutionUrl);
 
+          const isMapHidden = workspaceView === 'narrative';
+          const isMapFull = workspaceView === 'map';
+
           return (
             <div
-              className={`flex-1 flex flex-col overflow-hidden relative border-r transition-colors ${
+              className={`flex-col overflow-hidden relative border-r transition-colors ${
+                isMapHidden ? 'hidden' : 'flex'
+              } ${
                 isDark ? 'bg-dark-950 border-dark-800' : 'bg-slate-200/60 border-slate-300'
               } ${
-                phase === 'COMPLETED' ? 'md:w-1/2' : (phase === 'WRITE' ? 'w-full' : 'md:w-1/2 lg:w-3/5')
+                isMapFull
+                  ? 'flex-1 w-full'
+                  : (phase === 'COMPLETED' ? 'flex-1 w-full md:w-1/2' : 'flex-1 w-full md:w-1/2 lg:w-3/5')
               }`}
             >
               {/* Canvas Mouse Controls Toolbar */}
@@ -590,11 +696,26 @@ export default function GpeSimulator({
                   title={`Reset ${isViewingSolution ? 'solution' : 'map'} zoom to 100% and center position`}
                 >
                   <RotateCcw className={`w-3.5 h-3.5 ${zoomLevel !== 1 || panPos.x !== 0 || panPos.y !== 0 ? 'text-white' : (isViewingSolution ? 'text-purple-400' : 'text-blue-500')}`} />
-                  <span>Reset {isViewingSolution ? 'Solution' : 'Map'}</span>
+                  <span>Reset</span>
+                </button>
+
+                {/* Fullscreen Inspector Button */}
+                <button
+                  type="button"
+                  onClick={() => setInspectImage({
+                    url: isViewingSolution ? currentSolutionUrl : resolveGpeMapUrl(gpe),
+                    title: isViewingSolution ? 'Candidate Solution Sheet' : (gpe?.title || 'Map Model')
+                  })}
+                  className={`p-1 rounded transition-colors ${
+                    isDark ? 'hover:bg-dark-700 text-slate-300 hover:text-white' : 'hover:bg-slate-100 text-slate-700 hover:text-slate-900'
+                  }`}
+                  title="Fullscreen Inspect & Pan/Zoom"
+                >
+                  <Eye className="w-3.5 h-3.5" />
                 </button>
 
                 <span className="text-[10px] text-slate-400 font-mono hidden sm:inline ml-1 border-l border-slate-300 dark:border-dark-700 pl-2">
-                  Mouse: Scroll to zoom · Drag to pan
+                  Scroll: zoom · Drag: pan
                 </span>
               </div>
 
@@ -615,28 +736,14 @@ export default function GpeSimulator({
                     transformOrigin: 'center center',
                     transition: isDragging ? 'none' : 'transform 0.08s ease-out'
                   }}
-                  className="max-w-full max-h-full flex items-center justify-center pointer-events-none"
+                  className="flex items-center justify-center pointer-events-none"
                 >
                   <img
                     src={isViewingSolution ? currentSolutionUrl : resolveGpeMapUrl(gpe)}
                     alt={isViewingSolution ? (currentSolution?.author ? `${currentSolution.author}'s Solution` : 'Solution Sheet') : gpe.title}
-                    className="max-h-[82vh] w-auto object-contain rounded-lg shadow-2xl"
+                    className="max-h-[82vh] max-w-full w-auto h-auto object-contain rounded-lg shadow-2xl"
                     draggable={false}
-                    onError={(e) => {
-                      if (!isViewingSolution && gpe) {
-                        if (gpe.mapB2Key && !e.target.src.includes('/api/media/')) {
-                          e.target.src = apiUrl(`/api/media/${gpe.mapB2Key.replace(/^\/+/, '')}`);
-                        } else if (gpe.mapUrl && !e.target.src.includes(gpe.mapUrl)) {
-                          e.target.src = apiUrl(gpe.mapUrl);
-                        }
-                      } else if (isViewingSolution && currentSolution) {
-                        if (currentSolution.solutionB2Key && !e.target.src.includes('/api/media/')) {
-                          e.target.src = apiUrl(`/api/media/${currentSolution.solutionB2Key.replace(/^\/+/, '')}`);
-                        } else if (currentSolution.solutionImageUrl && !e.target.src.includes(currentSolution.solutionImageUrl)) {
-                          e.target.src = apiUrl(currentSolution.solutionImageUrl);
-                        }
-                      }
-                    }}
+                    onError={handleMapImageError}
                   />
                 </div>
               </div>
@@ -658,130 +765,200 @@ export default function GpeSimulator({
                   title={`Reset ${isViewingSolution ? 'solution' : 'map'} zoom to 100% and center position`}
                 >
                   <RotateCcw className={`w-3.5 h-3.5 ${isViewingSolution ? 'text-purple-500' : 'text-blue-500'} hover:text-white transition-colors`} />
-                  <span>Reset {isViewingSolution ? 'Solution' : 'Map'}</span>
+                  <span>Reset</span>
                 </button>
               )}
             </div>
           );
         })()}
 
-        {/* ── RIGHT PANEL: Narrative (in Phase 1 & 2) OR Solution Photo Upload (in Phase 4) ── */}
-        {(phase === 'BRIEFING' || phase === 'OBSERVE' || phase === 'COMPLETED') && (
-          <div className={`flex-1 flex flex-col overflow-hidden transition-colors ${
-            isDark ? 'bg-dark-900/60 border-dark-800' : 'bg-white/90 border-slate-200'
-          } ${
-            phase === 'COMPLETED' ? 'md:w-1/2' : 'md:w-1/2 lg:w-2/5'
-          }`}>
+        {/* ── RIGHT PANEL: Narrative (in Phase 1, 2, 3) OR Solution Photo Upload (in Phase 4) ── */}
+        {(() => {
+          const isNarrativeHidden = workspaceView === 'map';
+          const isNarrativeFull = workspaceView === 'narrative';
 
-            {/* ── In Phase 1 & 2: Display Problem Statement Narrative ── */}
-            {(phase === 'BRIEFING' || phase === 'OBSERVE') && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                {/* Header with Card Image / Pasted Text tabs */}
-                <div className={`p-3 border-b flex items-center justify-between gap-2 shrink-0 ${
-                  isDark ? 'bg-dark-900 border-dark-700' : 'bg-slate-50 border-slate-200'
-                }`}>
-                  <span className="text-xs font-bold flex items-center gap-1.5 text-blue-500">
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>Problem Statement / Narrative</span>
-                  </span>
+          return (
+            <div className={`flex-col overflow-hidden transition-colors ${
+              isNarrativeHidden ? 'hidden' : 'flex'
+            } ${
+              isDark ? 'bg-dark-900/60 border-dark-800' : 'bg-white/90 border-slate-200'
+            } ${
+              isNarrativeFull
+                ? 'flex-1 w-full'
+                : (phase === 'COMPLETED' ? 'flex-1 w-full md:w-1/2' : 'flex-1 w-full md:w-1/2 lg:w-2/5')
+            }`}>
 
-                  {hasNarrativeImage && hasNarrativeText && (
-                    <div className={`flex items-center p-0.5 rounded-lg border text-[11px] ${
-                      isDark ? 'bg-dark-950 border-dark-700' : 'bg-slate-200/80 border-slate-300'
-                    }`}>
-                      <button
-                        onClick={() => setNarrativeTab('text')}
-                        className={`px-2 py-0.5 rounded font-medium transition-colors ${
-                          narrativeTab === 'text' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        Pasted Text
-                      </button>
-                      <button
-                        onClick={() => setNarrativeTab('image')}
-                        className={`px-2 py-0.5 rounded font-medium transition-colors ${
-                          narrativeTab === 'image' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        Card Image
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Narrative Body */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs scrollbar-thin">
-                  {/* Display Narrative Card Image */}
-                  {(narrativeTab === 'image' || (!hasNarrativeText && hasNarrativeImage)) && (
-                    <div className={`rounded-xl overflow-hidden border flex items-center justify-center p-2 cursor-pointer ${
-                      isDark ? 'border-dark-700 bg-black/40' : 'border-slate-200 bg-slate-50'
-                    }`}
-                    onClick={() => setInspectImage({ url: resolveGpeNarrativeUrl(gpe), title: 'Narrative Problem Card' })}
-                    >
-                      <img
-                        src={resolveGpeNarrativeUrl(gpe)}
-                        alt="GPE Narrative Card"
-                        className="max-h-[75vh] w-auto object-contain rounded shadow"
-                        onError={(e) => {
-                          if (gpe?.narrativeB2Key && !e.target.src.includes('/api/media/')) {
-                            e.target.src = apiUrl(`/api/media/${gpe.narrativeB2Key.replace(/^\/+/, '')}`);
-                          } else if (gpe?.narrativeImageUrl && !e.target.src.includes(gpe.narrativeImageUrl)) {
-                            e.target.src = apiUrl(gpe.narrativeImageUrl);
-                          }
-                        }}
-                      />
-                    </div>
-                  )}
-
-                  {/* Display Pasted Narrative Text */}
-                  {(narrativeTab === 'text' || (!hasNarrativeImage && hasNarrativeText)) && (
-                    <div className={`border rounded-xl p-4 space-y-3 shadow-sm ${
-                      isDark ? 'bg-dark-950/80 border-dark-800' : 'bg-white border-slate-200'
-                    }`}>
-                      <p className="text-[11px] font-mono text-slate-400 border-b pb-1.5 border-slate-200 dark:border-dark-800 font-bold uppercase tracking-wider">
-                        Situation & Tasks Narrative
-                      </p>
-                      <div className={`whitespace-pre-wrap font-sans text-xs sm:text-sm leading-relaxed ${
-                        isDark ? 'text-slate-200' : 'text-slate-800'
-                      }`}>
-                        {gpe.description}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Briefing Prompt in Phase 1 */}
-                  {phase === 'BRIEFING' && (
-                    <div className="pt-2 space-y-2">
-                      <button
-                        onClick={startFiveMinuteObservation}
-                        className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all text-xs sm:text-sm"
-                      >
-                        <span>Begin 5-Minute Individual Observation</span>
-                        <ArrowRight className="w-4 h-4" />
-                      </button>
-                      <p className="text-[11px] text-slate-400 text-center font-mono">
-                        A single bell will chime when the 5 minutes conclude.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* ── In Phase 4: Solution Photo Upload (Stored on Cloudinary) ── */}
-            {phase === 'COMPLETED' && (
-              <div className="flex-1 flex flex-col overflow-y-auto p-4 space-y-4 scrollbar-thin">
-                <div className="space-y-1">
-                  <h3 className={`text-base font-bold flex items-center gap-2 ${
-                    isDark ? 'text-white' : 'text-slate-900'
+              {/* ── In Phase 1, 2, & 3 OR when viewing Narrative in Phase 4: Display Problem Narrative ── */}
+              {(phase === 'BRIEFING' || phase === 'OBSERVE' || phase === 'WRITE' || (phase === 'COMPLETED' && completedTab === 'narrative')) && (
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  {/* Header with Card Image / Pasted Text tabs */}
+                  <div className={`p-3 border-b flex items-center justify-between gap-2 shrink-0 ${
+                    isDark ? 'bg-dark-900 border-dark-700' : 'bg-slate-50 border-slate-200'
                   }`}>
-                    <Camera className="w-5 h-5 text-purple-500" />
-                    <span>Upload Solution Sheet Photo</span>
-                  </h3>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Writing period is complete. Snap or select a clear photo of your handwritten paper solution. It will be securely stored in cloud storage.
-                  </p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold flex items-center gap-1.5 text-blue-500">
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Problem Narrative</span>
+                      </span>
+
+                      {phase === 'COMPLETED' && (
+                        <button
+                          type="button"
+                          onClick={() => setCompletedTab('upload')}
+                          className="text-[11px] font-bold text-purple-600 dark:text-purple-400 hover:underline flex items-center gap-1 ml-2"
+                        >
+                          <Camera className="w-3 h-3" />
+                          <span>Back to Upload</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {hasNarrativeImage && hasNarrativeText && (
+                      <div className={`flex items-center p-0.5 rounded-lg border text-[11px] ${
+                        isDark ? 'bg-dark-950 border-dark-700' : 'bg-slate-200/80 border-slate-300'
+                      }`}>
+                        <button
+                          type="button"
+                          onClick={() => setNarrativeTab('image')}
+                          className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                            narrativeTab === 'image' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          Card Image
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNarrativeTab('text')}
+                          className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                            narrativeTab === 'text' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          Pasted Text
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Narrative Body */}
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs scrollbar-thin">
+                    {/* Display Narrative Card Image */}
+                    {(narrativeTab === 'image' || (!hasNarrativeText && hasNarrativeImage)) && (
+                      <div
+                        className={`rounded-xl overflow-hidden border flex flex-col items-center justify-center p-2 cursor-pointer transition-all ${
+                          isDark ? 'border-dark-700 bg-black/40 hover:border-blue-500/50' : 'border-slate-200 bg-slate-50 hover:border-blue-400'
+                        }`}
+                        onClick={() => setInspectImage({ url: resolveGpeNarrativeUrl(gpe), title: 'Narrative Problem Card' })}
+                        title="Click to expand & zoom narrative card"
+                      >
+                        <img
+                          src={resolveGpeNarrativeUrl(gpe)}
+                          alt="GPE Narrative Card"
+                          className="max-h-[75vh] w-auto max-w-full object-contain rounded shadow"
+                          onError={handleNarrativeImageError}
+                        />
+                        <div className="mt-2 flex items-center gap-1 text-[11px] text-blue-500 font-medium">
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Click to expand & zoom narrative card</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Display Pasted Narrative Text */}
+                    {(narrativeTab === 'text' || (!hasNarrativeImage && hasNarrativeText)) && (
+                      <div className={`border rounded-xl p-4 space-y-3 shadow-sm ${
+                        isDark ? 'bg-dark-950/80 border-dark-800' : 'bg-white border-slate-200'
+                      }`}>
+                        <p className="text-[11px] font-mono text-slate-400 border-b pb-1.5 border-slate-200 dark:border-dark-800 font-bold uppercase tracking-wider">
+                          Situation & Tasks Narrative
+                        </p>
+                        <div className={`whitespace-pre-wrap font-sans text-xs sm:text-sm leading-relaxed ${
+                          isDark ? 'text-slate-200' : 'text-slate-800'
+                        }`}>
+                          {gpe.description}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Phase 1 Action: Begin 5m study */}
+                    {phase === 'BRIEFING' && (
+                      <div className="pt-2 space-y-2">
+                        <button
+                          onClick={startFiveMinuteObservation}
+                          className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all text-xs sm:text-sm"
+                        >
+                          <span>Begin 5-Minute Individual Observation</span>
+                          <ArrowRight className="w-4 h-4" />
+                        </button>
+                        <p className="text-[11px] text-slate-400 text-center font-mono">
+                          A single bell chime will signal the end of the 5-minute study period.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Phase 2 Action: Proceed to write early */}
+                    {phase === 'OBSERVE' && (
+                      <div className="pt-2 space-y-2">
+                        <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-500 text-xs flex items-center justify-between">
+                          <span className="font-semibold">Phase 2: Individual 5-min study period active</span>
+                          <button
+                            onClick={startTenMinuteWriting}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg px-2.5 py-1 text-[11px] flex items-center gap-1 transition-colors"
+                          >
+                            <span>Start Writing Now</span>
+                            <ArrowRight className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Phase 3 Action: Finish writing & upload */}
+                    {phase === 'WRITE' && (
+                      <div className="pt-2 space-y-2">
+                        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs flex items-center justify-between gap-2">
+                          <div>
+                            <p className="font-bold">Phase 3: 10-Minute Writing Period</p>
+                            <p className="text-[11px] opacity-80">Write your individual solution plan on paper.</p>
+                          </div>
+                          <button
+                            onClick={finishWritingPeriod}
+                            className="bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors shadow-sm shrink-0"
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                            <span>Upload Solution</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
+              )}
+
+              {/* ── In Phase 4: Solution Photo Upload Tab ── */}
+              {phase === 'COMPLETED' && completedTab === 'upload' && (
+                <div className="flex-1 flex flex-col overflow-y-auto p-4 space-y-4 scrollbar-thin">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="space-y-1">
+                      <h3 className={`text-base font-bold flex items-center gap-2 ${
+                        isDark ? 'text-white' : 'text-slate-900'
+                      }`}>
+                        <Camera className="w-5 h-5 text-purple-500" />
+                        <span>Upload Solution Sheet Photo</span>
+                      </h3>
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Writing period is complete. Snap or select a clear photo of your handwritten paper solution.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setCompletedTab('narrative')}
+                      className="px-2.5 py-1 rounded-lg border text-xs font-semibold flex items-center gap-1 shrink-0 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/40 border-blue-500/30 transition-colors"
+                      title="Review the Problem Narrative Card"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Review Problem Card</span>
+                    </button>
+                  </div>
 
                 {/* Upload Form */}
                 <form onSubmit={handleUploadSolutionPhoto} className={`border rounded-2xl p-4 space-y-4 shadow-sm ${
@@ -1034,7 +1211,8 @@ export default function GpeSimulator({
             )}
 
           </div>
-        )}
+        );
+      })()}
 
       </div>
 

@@ -11,10 +11,40 @@ function formatTime(secs) {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay = false, className = '', downloadFilename = '' }) {
+export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackDuration = 0, autoPlay = false, className = '', downloadFilename = '' }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const speedMenuRef = useRef(null);
+
+  // Build candidate sources list: try primary src, then any provided fallbackSources, plus auto .mp4/.webm variations
+  const candidateSources = React.useMemo(() => {
+    const list = [];
+    const seen = new Set();
+    const add = (u) => {
+      if (u && typeof u === 'string' && u.trim() && !seen.has(u)) {
+        seen.add(u);
+        list.push(u);
+      }
+    };
+    add(src);
+    if (Array.isArray(fallbackSources)) {
+      fallbackSources.forEach(add);
+    }
+    // Also auto-generate alternative formats for Cloudinary
+    if (src && src.includes('cloudinary.com')) {
+      if (src.includes('.webm')) {
+        add(src.replace(/\.webm(\?.*)?$/i, '.mp4$1'));
+      } else if (src.includes('.mp4')) {
+        add(src.replace(/\.mp4(\?.*)?$/i, '.webm$1'));
+      } else if (!src.match(/\.(mp4|webm|mov|ogg)(\?.*)?$/i)) {
+        add(src + '.mp4');
+        add(src + '.webm');
+      }
+    }
+    return list;
+  }, [src, fallbackSources]);
+
+  const [candidateIndex, setCandidateIndex] = useState(0);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -30,6 +60,11 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   const hideControlsTimer = useRef(null);
   const isSeeking = useRef(false); // prevent onTimeUpdate from overwriting seek position
   const retryCountRef = useRef(0); // tracks how many times we've retried on error
+
+  // Reset candidate index when src or fallbackSources change
+  useEffect(() => {
+    setCandidateIndex(0);
+  }, [src, fallbackSources]);
 
   // YouTube-like Controls State
   const [doubleTapFeedback, setDoubleTapFeedback] = useState(null); // { side: 'left'|'right', count: 5, id: number }
@@ -60,7 +95,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     };
   }, []);
 
-  // Reload video element whenever src changes
+  // Reload video element whenever active src or candidate changes
   useEffect(() => {
     setIsPlaying(false);
     setCurrentTime(0);
@@ -75,8 +110,11 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     if (videoRef.current) {
       videoRef.current.currentTime = 0;
       videoRef.current.load();
+      if (autoPlay) {
+        videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+      }
     }
-  }, [src, fallbackDuration]);
+  }, [src, fallbackSources, candidateIndex, fallbackDuration]);
 
   useEffect(() => {
     if (fallbackDuration > 0 && (!duration || isNaN(duration) || duration === Infinity)) {
@@ -249,7 +287,17 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
 
   const handleVideoError = () => {
     const v = videoRef.current;
-    // Auto-retry up to 2 times — handles transient network glitches on Cloudinary/CDN
+    // If there is another candidate source, switch to it immediately before showing error
+    if (candidateIndex + 1 < candidateSources.length) {
+      const nextIdx = candidateIndex + 1;
+      console.warn(`Video source failed [${candidateIndex}]: ${candidateSources[candidateIndex]}, advancing to candidate [${nextIdx}]: ${candidateSources[nextIdx]}`);
+      setIsBuffering(true);
+      setCandidateIndex(nextIdx);
+      retryCountRef.current = 0;
+      return;
+    }
+
+    // Auto-retry up to 2 times on the final source
     if (retryCountRef.current < 2 && v) {
       retryCountRef.current += 1;
       setIsBuffering(true);
@@ -342,20 +390,24 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
     }
   };
 
+  const activeRawSrc = candidateSources[candidateIndex] || src;
+  const resolvedSrc = activeRawSrc?.startsWith('blob:') || activeRawSrc?.startsWith('data:') ? activeRawSrc : apiUrl(activeRawSrc);
+
   const handleDownload = async (e) => {
     e?.stopPropagation?.();
-    if (!src) return;
+    const currentDownloadSrc = activeRawSrc || src;
+    if (!currentDownloadSrc) return;
     try {
-      const ext = src.includes('.mp4') ? '.mp4' : '.webm';
+      const ext = currentDownloadSrc.includes('.mp4') ? '.mp4' : '.webm';
       let safeName = downloadFilename || `lecturette-recording-${Date.now()}`;
       if (!safeName.endsWith('.mp4') && !safeName.endsWith('.webm')) {
         safeName += ext;
       }
 
       // Local blob / data URLs — direct download, no fetch needed
-      if (src.startsWith('blob:') || src.startsWith('data:')) {
+      if (currentDownloadSrc.startsWith('blob:') || currentDownloadSrc.startsWith('data:')) {
         const a = document.createElement('a');
-        a.href = src;
+        a.href = currentDownloadSrc;
         a.download = safeName;
         document.body.appendChild(a);
         a.click();
@@ -365,7 +417,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
 
       // Build download URL — inject fl_attachment for Cloudinary to force Content-Disposition header
       const cleanBase = safeName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-      let dlUrl = apiUrl(src);
+      let dlUrl = apiUrl(currentDownloadSrc);
       if (dlUrl.includes('cloudinary.com') && dlUrl.includes('/upload/')) {
         dlUrl = dlUrl.replace('/upload/', `/upload/fl_attachment:${cleanBase}/`);
       }
@@ -394,7 +446,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
       // Fallback: open in new tab (fl_attachment flag makes Cloudinary serve it as download)
       window.open(dlUrl, '_blank');
     } catch (err) {
-      window.open(apiUrl(src), '_blank');
+      window.open(apiUrl(currentDownloadSrc), '_blank');
     }
   };
 
@@ -413,7 +465,6 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
   const maxVal = (duration && !isNaN(duration) && duration !== Infinity && duration > 0)
     ? duration
     : (fallbackDuration > 0 ? fallbackDuration : (currentTime > 0 ? currentTime * 1.05 : 0));
-  const resolvedSrc = src?.startsWith('blob:') || src?.startsWith('data:') ? src : apiUrl(src);
 
   const handleKeyDown = (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -487,6 +538,7 @@ export default function CustomVideoPlayer({ src, fallbackDuration = 0, autoPlay 
                 setHasError(false);
                 setIsBuffering(true);
                 retryCountRef.current = 0;
+                setCandidateIndex(0);
                 if (videoRef.current) {
                   videoRef.current.load();
                   videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
