@@ -482,9 +482,16 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
     if (isPlaying) {
       hideControlsTimer.current = setTimeout(() => {
         setControlsVisible(false);
-      }, 2500);
+      }, 5000);
     }
   };
+
+  useEffect(() => {
+    resetHideControls();
+    return () => {
+      if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
+    };
+  }, [isPlaying]);
 
   // For the seek bar: use actual duration when available; for Infinity-duration blobs
   // use Math.max of duration, fallbackDuration, and currentTime so the bar stays accurate and scrubbable.
@@ -523,8 +530,12 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
       tabIndex={0}
       onKeyDown={handleKeyDown}
       onMouseMove={resetHideControls}
+      onMouseEnter={resetHideControls}
+      onMouseDown={resetHideControls}
+      onTouchStart={resetHideControls}
+      onWheel={resetHideControls}
       onClick={resetHideControls}
-      className={`relative bg-black flex items-center justify-center group overflow-hidden select-none outline-none focus:ring-1 focus:ring-blue-500/40 ${className}`}
+      className={`relative bg-black flex items-center justify-center group overflow-hidden select-none outline-none focus:ring-1 focus:ring-blue-500/40 ${!controlsVisible && isPlaying ? 'cursor-none' : ''} ${className}`}
     >
       <video
         ref={videoRef}

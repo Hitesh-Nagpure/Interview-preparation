@@ -120,6 +120,27 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const streamRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  // Inactivity tracking: during recording, controls disappear after 5s and reappear on mouse activity
+  const [recorderControlsVisible, setRecorderControlsVisible] = useState(true);
+  const recorderInactivityTimer = useRef(null);
+
+  const resetRecorderInactivity = useCallback(() => {
+    setRecorderControlsVisible(true);
+    if (recorderInactivityTimer.current) clearTimeout(recorderInactivityTimer.current);
+    if (recordingStatus === 'RECORDING') {
+      recorderInactivityTimer.current = setTimeout(() => {
+        setRecorderControlsVisible(false);
+      }, 5000);
+    }
+  }, [recordingStatus]);
+
+  useEffect(() => {
+    resetRecorderInactivity();
+    return () => {
+      if (recorderInactivityTimer.current) clearTimeout(recorderInactivityTimer.current);
+    };
+  }, [recordingStatus, resetRecorderInactivity]);
+
   // Setup real-time audio volume visualizer (VU meter)
   const setupAudioAnalyser = (mediaStream) => {
     try {
@@ -1220,7 +1241,13 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       )}
 
       {/* Main Studio Card */}
-      <div className="card overflow-hidden bg-slate-900 border-slate-800 shadow-xl">
+      <div
+        onMouseMove={resetRecorderInactivity}
+        onMouseEnter={resetRecorderInactivity}
+        onMouseDown={resetRecorderInactivity}
+        onTouchStart={resetRecorderInactivity}
+        className="card overflow-hidden bg-slate-900 border-slate-800 shadow-xl"
+      >
         <div className="relative aspect-video w-full bg-black flex items-center justify-center overflow-hidden">
           
           {/* Live Stream View */}
@@ -1343,7 +1370,11 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         )}
 
         {/* Studio Controls Bar */}
-        <div className="px-3 sm:px-4 py-3 bg-slate-950 border-t border-slate-800 flex flex-col gap-3">
+        <div className={`px-3 sm:px-4 py-3 bg-slate-950 border-t border-slate-800 flex flex-col gap-3 transition-opacity duration-300 ${
+          recordingStatus === 'RECORDING' && !recorderControlsVisible
+            ? 'opacity-0 pointer-events-none'
+            : 'opacity-100 pointer-events-auto'
+        }`}>
           {/* If STOPPED: Title and Date edit fields */}
           {recordingStatus === 'STOPPED' && (
             <div className="w-full pb-3 border-b border-slate-800 animate-fadeIn">

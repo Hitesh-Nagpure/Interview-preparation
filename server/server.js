@@ -829,9 +829,9 @@ app.post('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), asyn
     const newNoteCard = {
       id: noteId,
       title: (title || '').trim(),
-      content: contentB2Key ? '' : content,
+      content: content || '',
       contentB2Key,
-      plainText: plainTextB2Key ? '' : (plainText || ''),
+      plainText: plainText || '',
       plainTextB2Key,
       author: trimmedAuthor,
       createdAt: new Date(),
@@ -842,9 +842,9 @@ app.post('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), asyn
 
     // Keep folder.notes updated with latest for backward compatibility
     folder.notes = {
-      content: contentB2Key ? '' : content,
+      content: content || '',
       contentB2Key,
-      plainText: plainTextB2Key ? '' : (plainText || ''),
+      plainText: plainText || '',
       plainTextB2Key,
       author: trimmedAuthor,
       updatedAt: new Date()
@@ -884,22 +884,20 @@ app.put('/api/folders/:dateFolder/notes/:noteId', express.json({ limit: '10mb' }
     const card = folder.noteCards[cardIndex];
     if (title !== undefined) card.title = title.trim();
     if (content !== undefined) {
+      card.content = content || '';
       if (isB2Ready() && content) {
         if (card.contentB2Key) { deleteFromB2(card.contentB2Key).catch(() => {}); evictB2TextCache(card.contentB2Key); }
         card.contentB2Key = await uploadTextToB2(content, `notes/text/${card.id}-content.html`);
-        card.content = '';
       } else {
-        card.content = content;
         if (card.contentB2Key) { deleteFromB2(card.contentB2Key).catch(() => {}); evictB2TextCache(card.contentB2Key); card.contentB2Key = null; }
       }
     }
     if (plainText !== undefined) {
+      card.plainText = plainText || '';
       if (isB2Ready() && plainText) {
         if (card.plainTextB2Key) { deleteFromB2(card.plainTextB2Key).catch(() => {}); evictB2TextCache(card.plainTextB2Key); }
         card.plainTextB2Key = await uploadTextToB2(plainText, `notes/text/${card.id}-plain.txt`);
-        card.plainText = '';
       } else {
-        card.plainText = plainText;
         if (card.plainTextB2Key) { deleteFromB2(card.plainTextB2Key).catch(() => {}); evictB2TextCache(card.plainTextB2Key); card.plainTextB2Key = null; }
       }
     }
@@ -1135,25 +1133,26 @@ app.get('/api/folders/:dateFolder/reviews', async (req, res) => {
     const { dateFolder } = req.params;
     const folder = await DateFolder.findOne({ dateFolder });
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
+    const hydFolder = await hydrateFolder(folder);
 
-    let noteCards = folder.noteCards || [];
-    if (noteCards.length === 0 && folder.notes?.content && folder.notes.content.trim() && folder.notes.content !== '<p><br></p>') {
+    let noteCards = hydFolder.noteCards || [];
+    if (noteCards.length === 0 && hydFolder.notes?.content && hydFolder.notes.content.trim() && hydFolder.notes.content !== '<p><br></p>') {
       const legacyCard = {
-        id: 'note-legacy-' + (folder.notes.updatedAt ? new Date(folder.notes.updatedAt).getTime() : Date.now()),
+        id: 'note-legacy-' + (hydFolder.notes.updatedAt ? new Date(hydFolder.notes.updatedAt).getTime() : Date.now()),
         title: 'Initial Practice Note',
-        content: folder.notes.content,
-        plainText: folder.notes.plainText || '',
-        author: folder.notes.author || '',
-        createdAt: folder.notes.updatedAt || new Date(),
-        updatedAt: folder.notes.updatedAt || new Date()
+        content: hydFolder.notes.content,
+        plainText: hydFolder.notes.plainText || '',
+        author: hydFolder.notes.author || '',
+        createdAt: hydFolder.notes.updatedAt || new Date(),
+        updatedAt: hydFolder.notes.updatedAt || new Date()
       };
       folder.noteCards = [legacyCard];
       await folder.save();
-      noteCards = folder.noteCards;
+      noteCards = [legacyCard];
     }
 
     res.json({
-      reviews: (folder.reviews || []).map(r => ({
+      reviews: (hydFolder.reviews || []).map(r => ({
         id: r.id,
         title: r.title,
         duration: r.duration,
@@ -1162,11 +1161,11 @@ app.get('/api/folders/:dateFolder/reviews', async (req, res) => {
         reviewerName: r.reviewerName || '',
         recordedAt: r.recordedAt
       })),
-      notes: folder.notes || { content: '', plainText: '', author: '', updatedAt: null },
+      notes: hydFolder.notes || { content: '', plainText: '', author: '', updatedAt: null },
       noteCards: noteCards.map(nc => ({
         id: nc.id,
         title: nc.title || '',
-        content: nc.content,
+        content: nc.content || '',
         plainText: nc.plainText || '',
         author: nc.author || '',
         createdAt: nc.createdAt,

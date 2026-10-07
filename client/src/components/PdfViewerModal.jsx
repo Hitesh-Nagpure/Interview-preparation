@@ -121,62 +121,78 @@ export default function PdfViewerModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/85 backdrop-blur-sm animate-fadeIn">
       <div className="bg-white dark:bg-dark-900 border border-slate-200 dark:border-dark-600 rounded-xl shadow-2xl w-full max-w-5xl h-[92vh] flex flex-col overflow-hidden">
         
-        {/* Modal Top Bar */}
-        <div className="px-4 py-2 border-b border-slate-200 dark:border-dark-700 flex items-center justify-between gap-3 bg-slate-50 dark:bg-dark-800 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono ${
-              solution.testType === 'TAT'
-                ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30'
-                : solution.testType === 'WAT'
-                ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30'
-                : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
-            }`}>
-              {solution.testType}
-            </span>
-            <div className="min-w-0">
-              <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white truncate">
-                {title || solutionDate || 'Solution PDF'}
-              </h3>
-              <p className="text-[10px] text-slate-400 flex items-center gap-1">
-                <Calendar className="w-2.5 h-2.5 inline" /> {solutionDate} · {solution.originalName || 'solution.pdf'}
-              </p>
+        {/* Modal Top Bar - Fully Responsive */}
+        <div className="px-3 sm:px-4 py-2 sm:py-2.5 border-b border-slate-200 dark:border-dark-700 bg-slate-50 dark:bg-dark-800 shrink-0 flex flex-col md:flex-row md:items-center justify-between gap-2.5 md:gap-3">
+          {/* Top Row / Left Section: Type badge + Title + Date */}
+          <div className="flex items-center justify-between md:justify-start gap-2.5 min-w-0 flex-1">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono shrink-0 ${
+                solution.testType === 'TAT'
+                  ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30'
+                  : solution.testType === 'WAT'
+                  ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30'
+                  : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+              }`}>
+                {solution.testType}
+              </span>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white truncate max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md">
+                  {title || solutionDate || 'Solution PDF'}
+                </h3>
+                <p className="text-[10px] text-slate-400 flex items-center gap-1 truncate">
+                  <Calendar className="w-2.5 h-2.5 inline shrink-0" /> {solutionDate} · {solution.originalName || 'solution.pdf'}
+                </p>
+              </div>
+            </div>
+
+            {/* Mobile close button visible on small screens */}
+            <div className="flex md:hidden items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+                title="Close modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
-            {/* View Mode Toggle: Reader (Canvas) | Native (Iframe) | Pages (Images) */}
-            <div className="flex items-center bg-slate-200 dark:bg-dark-700 rounded p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setViewMode('reader')}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-                  viewMode === 'reader'
-                    ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold'
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
-                }`}
-                title="Universal Canvas PDF Reader (Recommended for all mobile devices)"
-              >
-                Reader
-              </button>
+          {/* Bottom Row on mobile / Right Section on desktop: View Modes & Action Buttons */}
+          <div className="flex items-center justify-between md:justify-end gap-1.5 shrink-0 flex-wrap sm:flex-nowrap">
+            {/* View Mode Toggle: Native (Iframe) | Reader (Canvas) | Pages (Images) */}
+            <div className="flex items-center bg-slate-200 dark:bg-dark-700 rounded-lg p-0.5 text-xs shrink-0">
               <button
                 type="button"
                 onClick={() => setViewMode('pdf')}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
                   viewMode === 'pdf'
-                    ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold'
+                    ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold'
                     : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
                 }`}
                 title="Native embedded browser viewer"
               >
                 Native
               </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('reader')}
+                className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+                  viewMode === 'reader'
+                    ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                }`}
+                title="Universal Canvas PDF Reader"
+              >
+                Reader
+              </button>
               {pages.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setViewMode('images')}
-                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                  className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
                     viewMode === 'images'
-                      ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold'
+                      ? 'bg-white dark:bg-dark-900 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold'
                       : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
                   }`}
                   title="View pages as high-resolution images"
@@ -186,57 +202,63 @@ export default function PdfViewerModal({
               )}
             </div>
 
-            {/* Direct Open in Device Viewer / New Tab (Essential for Mobile Devices) */}
-            <a
-              href={fileUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-1.5 rounded text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors flex items-center gap-1 text-[11px] font-semibold border border-indigo-500/20"
-              title="Open directly in Mobile / System PDF Viewer"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Open</span>
-            </a>
+            <div className="flex items-center gap-1 shrink-0">
+              {/* Direct Open in Device Viewer / New Tab */}
+              <a
+                href={fileUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2 py-1 rounded-md text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors flex items-center gap-1 text-[11px] font-semibold border border-indigo-500/20"
+                title="Open directly in Mobile / System PDF Viewer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Open</span>
+              </a>
 
-            {/* Edit Button */}
-            <button
-              onClick={() => setIsEditing(v => !v)}
-              className={`p-1.5 rounded transition-colors ${
-                isEditing
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-dark-700'
-              }`}
-              title="Edit solution details or replace PDF"
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-            </button>
+              {/* Edit Button */}
+              <button
+                type="button"
+                onClick={() => setIsEditing(v => !v)}
+                className={`p-1.5 rounded-md transition-colors ${
+                  isEditing
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-dark-700'
+                }`}
+                title="Edit solution details or replace PDF"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+              </button>
 
-            {/* Direct Download Button via Backend Streaming */}
-            <a
-              href={downloadUrl}
-              download={solution.originalName || `${title || 'solution'}.pdf`}
-              className="p-1.5 rounded text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-              title="Download PDF directly"
-            >
-              <Download className="w-3.5 h-3.5" />
-            </a>
+              {/* Direct Download Button */}
+              <a
+                href={downloadUrl}
+                download={solution.originalName || `${title || 'solution'}.pdf`}
+                className="p-1.5 rounded-md text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
+                title="Download PDF directly"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </a>
 
-            {/* Delete Button */}
-            <button
-              onClick={handleDelete}
-              className="p-1.5 rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-              title="Delete PDF"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+              {/* Delete Button */}
+              <button
+                type="button"
+                onClick={handleDelete}
+                className="p-1.5 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                title="Delete PDF"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
 
-            {/* Close Button */}
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
+              {/* Desktop Close Button */}
+              <button
+                type="button"
+                onClick={onClose}
+                className="hidden md:flex p-1.5 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-dark-700 transition-colors ml-1"
+                title="Close modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
 

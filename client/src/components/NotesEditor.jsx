@@ -154,8 +154,17 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
         setReviews(data.reviews);
       }
       if (Array.isArray(data.noteCards) && data.noteCards.length > 0) {
-        // Always update from server — this ensures notes from all authors are visible
-        setNoteCards(data.noteCards);
+        // Merge with existing state to ensure non-empty card content is never wiped
+        setNoteCards(prev => {
+          return data.noteCards.map(nc => {
+            const match = prev.find(p => p.id === nc.id);
+            return {
+              ...nc,
+              content: nc.content || match?.content || '',
+              plainText: nc.plainText || match?.plainText || ''
+            };
+          });
+        });
       } else if (data.notes?.content && noteCardsLengthRef.current === 0) {
         setNoteCards([{
           id: 'note-initial',
@@ -196,11 +205,19 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
   }, [dateFolder]); // Only reset on folder change — fetchLatestData excluded intentionally
 
   // Hydrate noteCards/reviews from props when they arrive/update (e.g. after onRefresh),
-  // but ONLY if the user is not currently editing a note card. This prevents overwriting
-  // an in-progress edit while still keeping the list up-to-date.
+  // but merge with existing cards so non-empty card content is never overwritten with blanks.
   useEffect(() => {
     if (Array.isArray(initialNoteCards) && initialNoteCards.length > 0) {
-      setNoteCards(initialNoteCards);
+      setNoteCards(prev => {
+        return initialNoteCards.map(nc => {
+          const match = prev.find(p => p.id === nc.id);
+          return {
+            ...nc,
+            content: nc.content || match?.content || '',
+            plainText: nc.plainText || match?.plainText || ''
+          };
+        });
+      });
     } else if (initialNotes?.content && initialNotes.content.trim() && initialNotes.content !== '<p><br></p>') {
       setNoteCards(prev => prev.length > 0 ? prev : [{
         id: 'note-initial',
@@ -1266,7 +1283,7 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
             </div>
 
             <div className="flex items-center gap-2 self-end sm:self-center">
-              {editingNoteId && (
+              {editingNoteId ? (
                 <button
                   type="button"
                   onClick={handleCancelEdit}
@@ -1274,37 +1291,11 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
                 >
                   Cancel Edit
                 </button>
+              ) : (
+                <span className="text-[11px] font-mono text-slate-400">
+                  {dateFolder}
+                </span>
               )}
-
-              <button
-                type="button"
-                onClick={handleSaveNotes}
-                disabled={isSavingNotes}
-                className={`flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm ${
-                  notesSaveStatus === 'saved'
-                    ? 'bg-emerald-600 text-white'
-                    : editingNoteId
-                      ? 'bg-amber-600 hover:bg-amber-500 text-white'
-                      : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                }`}
-              >
-                {isSavingNotes ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>{editingNoteId ? 'Updating...' : 'Saving Card...'}</span>
-                  </>
-                ) : notesSaveStatus === 'saved' ? (
-                  <>
-                    <Check className="w-3.5 h-3.5" />
-                    <span>{editingNoteId ? 'Card Updated!' : 'Card Saved!'}</span>
-                  </>
-                ) : (
-                  <>
-                    <Save className="w-3.5 h-3.5" />
-                    <span>{editingNoteId ? 'Update Note Card' : 'Save Notes'}</span>
-                  </>
-                )}
-              </button>
             </div>
           </div>
 
@@ -1500,25 +1491,69 @@ export default function NotesEditor({ dateFolder, initialNotes, initialNoteCards
             data-placeholder="Start typing your daily practice review, observations, psychologist tips, or character notes here..."
           />
 
-          {/* Editor Bottom Stats Bar */}
-          <div className="px-4 py-2 bg-slate-50 dark:bg-dark-800/60 border-t border-slate-200 dark:border-dark-700 flex flex-wrap items-center justify-between text-[11px] text-slate-400 gap-2">
-            <div className="flex items-center gap-3">
-              <span>{wordsCount} words</span>
+          {/* Editor Bottom Stats & Action Bar — Save button in bottom right corner */}
+          <div className="px-4 py-2.5 bg-slate-50 dark:bg-dark-800/80 border-t border-slate-200 dark:border-dark-700 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2.5 text-[11px] text-slate-400">
+              <span className="font-semibold text-slate-700 dark:text-slate-200">{wordsCount} words</span>
               <span>·</span>
               <span>{charsCount} characters</span>
-            </div>
-
-            <div className="flex items-center gap-2">
               {reviewerName.trim() && (
-                <span className="text-indigo-600 dark:text-indigo-400 font-medium">
-                  Author: {reviewerName.trim()}
-                </span>
+                <>
+                  <span>·</span>
+                  <span className="text-indigo-600 dark:text-indigo-400 font-medium">
+                    Author: {reviewerName.trim()}
+                  </span>
+                </>
               )}
               {lastSavedTime && (
-                <span>
-                  · Last saved: {lastSavedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
+                <>
+                  <span>·</span>
+                  <span>Last saved: {lastSavedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </>
               )}
+            </div>
+
+            {/* Save Button in Bottom Right Corner */}
+            <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+              {editingNoteId && (
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="btn-secondary px-3 py-1.5 text-xs font-semibold"
+                >
+                  Cancel Edit
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleSaveNotes}
+                disabled={isSavingNotes}
+                className={`flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 cursor-pointer ${
+                  notesSaveStatus === 'saved'
+                    ? 'bg-emerald-600 text-white shadow-emerald-500/20'
+                    : editingNoteId
+                      ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-500/20'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-500/20'
+                }`}
+                title="Save this note as a note card"
+              >
+                {isSavingNotes ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>{editingNoteId ? 'Updating...' : 'Saving...'}</span>
+                  </>
+                ) : notesSaveStatus === 'saved' ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{editingNoteId ? 'Card Updated!' : 'Note Saved!'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{editingNoteId ? 'Update Note Card' : 'Save Notes'}</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>
