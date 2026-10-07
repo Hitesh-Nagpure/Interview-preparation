@@ -116,6 +116,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const chunksRef = useRef([]);
   const startTimeRef = useRef(0);
   const totalDurationRef = useRef(0); // in seconds, tracked in background
+  const totalDurationMsRef = useRef(0); // in milliseconds, exact timestamp tracker
   const streamRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -151,16 +152,21 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
+      let lastVolCheck = 0;
       const checkVolume = () => {
         if (!analyserRef.current) return;
-        analyserRef.current.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += dataArray[i];
+        const now = Date.now();
+        if (now - lastVolCheck >= 100) {
+          lastVolCheck = now;
+          analyserRef.current.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length;
+          const normalized = Math.min(100, Math.round((avg / 128) * 100));
+          setAudioLevel(prev => (Math.abs(prev - normalized) > 2 ? normalized : prev));
         }
-        const avg = sum / dataArray.length;
-        const normalized = Math.min(100, Math.round((avg / 128) * 100));
-        setAudioLevel(normalized);
         animFrameRef.current = requestAnimationFrame(checkVolume);
       };
 
@@ -214,7 +220,9 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       existingAudio.forEach(t => { t.enabled = true; });
       setMicActive(true);
       setMicMuted(false);
-      setupAudioAnalyser(currentStream);
+      if (!analyserRef.current) {
+        setupAudioAnalyser(currentStream);
+      }
       return currentStream;
     }
 
@@ -425,23 +433,27 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
 
     setRecordingStatus('COUNTDOWN');
-    setCountdown(waitTime);
+    let remaining = waitTime;
+    setCountdown(remaining);
     soundEngine.playCountdownTick(false);
 
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+
     countdownIntervalRef.current = setInterval(() => {
-      setCountdown(prev => {
-        if (prev <= 1) {
-          clearInterval(countdownIntervalRef.current);
-          countdownIntervalRef.current = null;
-          soundEngine.playCountdownTick(true);
-          setCountdown(null);
-          executeStartRecording(streamRef.current || currentStream);
-          return null;
-        }
+      remaining -= 1;
+      if (remaining > 0) {
+        setCountdown(remaining);
         soundEngine.playCountdownTick(false);
-        return prev - 1;
-      });
+      } else {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+        soundEngine.playCountdownTick(true);
+        setCountdown(null);
+        executeStartRecording(streamRef.current || currentStream);
+      }
     }, 1000);
   };
 
@@ -456,6 +468,12 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
 
   // Execute recording start with synchronized audio, optimized bitrate, and SSB bell listener
   const executeStartRecording = async (providedStream) => {
+    // Prevent duplicate execution if recorder is already active
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      console.warn('Recording already active, ignoring duplicate start');
+      return;
+    }
+
     let activeStream = providedStream || streamRef.current || stream;
     if (!activeStream) {
       setError('Please enable camera before recording.');
@@ -481,16 +499,17 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     setUploadSuccess(null);
     chunksRef.current = [];
     totalDurationRef.current = 0;
+    totalDurationMsRef.current = 0;
     setRecordingElapsed(0);
     singleBellFiredRef.current = false;
     doubleBellFiredRef.current = false;
     setBellAlertNotification(null);
     startTimeRef.current = Date.now();
 
-    // Select supported mimeType
+    // Select supported mimeType (prioritize VP8 for rock-solid stability and playback on Windows Chrome/Edge)
     const mimeTypes = [
-      'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9,opus',
       'video/webm',
       'video/mp4'
     ];
@@ -503,12 +522,11 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     }
 
     try {
-      // Optimize bitrate: 600 kbps video + 64 kbps mono audio — sharp speech video, reduces file size by ~40-50% for fast uploads
       const options = {
-        videoBitsPerSecond: 600_000
+        videoBitsPerSecond: 1_200_000 // 1.2 Mbps reliable 720p stream
       };
       if (hasAudio) {
-        options.audioBitsPerSecond = 64_000;
+        options.audioBitsPerSecond = 128_000;
       }
       if (selectedMimeType) {
         options.mimeType = selectedMimeType;
@@ -531,13 +549,17 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         }
       };
 
+      mr.onerror = (e) => {
+        console.error('MediaRecorder error event:', e);
+      };
+
       mr.onstop = async () => {
         const rawBlob = new Blob(chunksRef.current, { type: mr.mimeType || selectedMimeType || 'video/webm' });
-        const durationSec = totalDurationRef.current || Math.round((Date.now() - startTimeRef.current) / 1000) || 1;
-        const durationMs = Math.max(1000, Math.round(durationSec * 1000));
+        const recordedMs = totalDurationMsRef.current || (startTimeRef.current > 0 ? (Date.now() - startTimeRef.current) : 0);
+        const durationSec = totalDurationRef.current || Math.max(1, Math.round(recordedMs / 1000));
+        const durationMs = Math.max(1000, recordedMs);
         let finalBlob = rawBlob;
 
-        // Patch WebM header with exact duration so downloaded video has perfectly synced seeking
         try {
           if (rawBlob.type.includes('webm') || !rawBlob.type) {
             finalBlob = await fixWebmDuration(rawBlob, durationMs, { logger: false });
@@ -560,14 +582,15 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
         }
       };
 
-      mr.start(1000); // 1-second chunks
+      mr.start(1000); // 1-second timeslice chunks
       mediaRecorderRef.current = mr;
       setRecordingStatus('RECORDING');
 
       // Start Bell tracking interval (Single bell at 2m 30s / 150s, Double bell at 3m 00s / 180s)
       if (bellIntervalRef.current) clearInterval(bellIntervalRef.current);
       bellIntervalRef.current = setInterval(() => {
-        const elapsed = totalDurationRef.current + Math.round((Date.now() - startTimeRef.current) / 1000);
+        const activeMs = startTimeRef.current > 0 ? (Date.now() - startTimeRef.current) : 0;
+        const elapsed = Math.round((totalDurationMsRef.current + activeMs) / 1000);
         setRecordingElapsed(elapsed);
 
         // 1. Single Bell at 2m 30s (150 seconds elapsed, 30s remaining)
@@ -603,8 +626,13 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
   const handlePauseRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.pause();
-      totalDurationRef.current += Math.round((Date.now() - startTimeRef.current) / 1000);
-      setRecordingElapsed(totalDurationRef.current);
+      if (startTimeRef.current > 0) {
+        totalDurationMsRef.current += (Date.now() - startTimeRef.current);
+        startTimeRef.current = 0;
+      }
+      const curSec = Math.round(totalDurationMsRef.current / 1000);
+      totalDurationRef.current = curSec;
+      setRecordingElapsed(curSec);
       if (bellIntervalRef.current) {
         clearInterval(bellIntervalRef.current);
         bellIntervalRef.current = null;
@@ -622,7 +650,8 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
 
       if (bellIntervalRef.current) clearInterval(bellIntervalRef.current);
       bellIntervalRef.current = setInterval(() => {
-        const elapsed = totalDurationRef.current + Math.round((Date.now() - startTimeRef.current) / 1000);
+        const activeMs = startTimeRef.current > 0 ? (Date.now() - startTimeRef.current) : 0;
+        const elapsed = Math.round((totalDurationMsRef.current + activeMs) / 1000);
         setRecordingElapsed(elapsed);
 
         if (elapsed >= 150 && !singleBellFiredRef.current) {
@@ -657,8 +686,19 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
       bellIntervalRef.current = null;
     }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      if (recordingStatus === 'RECORDING') {
-        totalDurationRef.current += Math.round((Date.now() - startTimeRef.current) / 1000);
+      if (startTimeRef.current > 0) {
+        totalDurationMsRef.current += (Date.now() - startTimeRef.current);
+        startTimeRef.current = 0;
+      }
+      const finalSec = Math.max(1, Math.round(totalDurationMsRef.current / 1000));
+      totalDurationRef.current = finalSec;
+      setRecordingElapsed(finalSec);
+
+      // Crucial: Request remaining timeslice data before stopping so no trailing speech is lost
+      if (mediaRecorderRef.current.state === 'recording') {
+        try {
+          mediaRecorderRef.current.requestData();
+        } catch (e) {}
       }
       mediaRecorderRef.current.stop();
     }
@@ -830,8 +870,12 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
 
     // Stop active recorder if running
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try { mediaRecorderRef.current.stop(); } catch (e) {}
+      try {
+        mediaRecorderRef.current.onstop = null;
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
     }
+    mediaRecorderRef.current = null;
 
     if (bellIntervalRef.current) {
       clearInterval(bellIntervalRef.current);
@@ -863,6 +907,8 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     setCurrentTime(0);
     setVideoDuration(0);
     totalDurationRef.current = 0;
+    totalDurationMsRef.current = 0;
+    startTimeRef.current = 0;
     if (streamRef.current) {
       setupAudioAnalyser(streamRef.current);
     }
@@ -924,6 +970,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
     tempVideo.onloadedmetadata = () => {
       const dur = Math.round(tempVideo.duration) || 0;
       totalDurationRef.current = dur;
+      totalDurationMsRef.current = Math.round(tempVideo.duration * 1000) || 0;
       setVideoDuration(dur);
     };
 
@@ -1199,8 +1246,18 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                   </div>
                 </div>
               )}
+              {/* Prep Timer Badge before recording starts */}
+              {recordingStatus === 'IDLE' && cameraActive && (
+                <div className="absolute top-4 right-4 flex items-center gap-1.5 bg-black/70 backdrop-blur-md px-3 py-1 rounded-full border border-slate-700/80 z-20 text-slate-300 shadow-md">
+                  <Clock className="w-3.5 h-3.5 text-blue-400" />
+                  <span className="text-xs font-mono font-medium text-slate-200">
+                    {waitTime > 0 ? `Prep Timer: ${waitTime}s` : 'Instant Start'}
+                  </span>
+                </div>
+              )}
+
               {/* Countdown Overlay */}
-              {recordingStatus === 'COUNTDOWN' && (
+              {(recordingStatus === 'COUNTDOWN' || (countdown !== null && countdown > 0)) && (
                 <div className="absolute inset-0 bg-black/75 backdrop-blur-sm flex flex-col items-center justify-center z-30 animate-fadeIn select-none">
                   <div className="relative flex items-center justify-center">
                     <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin absolute" />
@@ -1423,7 +1480,7 @@ export default function LecturetteRecorder({ folders, onRefresh, onNavigate }) {
                 </div>
               )}
 
-              {recordingStatus === 'COUNTDOWN' && (
+              {(recordingStatus === 'COUNTDOWN' || (countdown !== null && countdown > 0)) && (
                 <button
                   onClick={handleCancelCountdown}
                   className="btn-secondary bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700 px-3 py-1.5 text-xs flex items-center gap-1"

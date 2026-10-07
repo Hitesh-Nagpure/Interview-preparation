@@ -30,7 +30,7 @@ export default function PdfViewerModal({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // View mode: 'reader' (universal Canvas PDF), 'native' (iframe), or 'images' (pages)
-  const [viewMode, setViewMode] = useState('reader');
+  const [viewMode, setViewMode] = useState('pdf');
   const [pages, setPages] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(100);

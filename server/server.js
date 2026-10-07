@@ -56,7 +56,7 @@ const {
 
 initFirebase();
 
-// ── Backblaze B2 Storage setup (preferred over Firebase/GridFS) ───────────────
+// ── Backblaze B2 Storage setup (preferred storage for all binary and text files) ──
 const {
   initB2,
   isB2Ready,
@@ -70,9 +70,112 @@ const {
 
 initB2();
 
-// Helper: pick best storage backend (B2 → Firebase → GridFS)
+// Helper: pick best storage backend (B2 → Firebase)
 function bestStorageReady() {
   return isB2Ready() || isFirebaseReady();
+}
+
+// ── B2 Text Helpers (store plain text / JSON as a file in B2) ─────────────────
+const b2TextCache = new Map();
+
+async function uploadTextToB2(text, b2Path) {
+  if (!isB2Ready()) return null;
+  try {
+    const buf = Buffer.from(text || '', 'utf8');
+    const res = await uploadBufferToB2(buf, b2Path, 'text/plain; charset=utf-8');
+    if (res?.key) {
+      b2TextCache.set(res.key, text || '');
+    }
+    return res.key;
+  } catch (err) {
+    console.warn('B2 text upload warning:', err.message);
+    return null;
+  }
+}
+
+async function downloadTextFromB2(b2Key) {
+  if (!b2Key) return null;
+  if (b2TextCache.has(b2Key)) return b2TextCache.get(b2Key);
+  if (!isB2Ready()) return null;
+  try {
+    const st = await getB2Stream(b2Key);
+    if (!st) return null;
+    const text = await new Promise((resolve, reject) => {
+      const chunks = [];
+      st.stream.on('data', d => chunks.push(d));
+      st.stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      st.stream.on('error', reject);
+    });
+    b2TextCache.set(b2Key, text);
+    return text;
+  } catch (err) {
+    console.warn('B2 text download warning:', err.message);
+    return null;
+  }
+}
+
+function evictB2TextCache(b2Key) {
+  if (b2Key) b2TextCache.delete(b2Key);
+}
+
+async function hydrateGpe(gpe) {
+  if (!gpe) return gpe;
+  const obj = typeof gpe.toObject === 'function' ? gpe.toObject() : { ...gpe };
+  if (obj.descriptionB2Key && !obj.description) {
+    const t = await downloadTextFromB2(obj.descriptionB2Key);
+    if (t !== null && t !== undefined) obj.description = t;
+  }
+  if (obj.modelSolutionB2Key && !obj.modelSolution) {
+    const t = await downloadTextFromB2(obj.modelSolutionB2Key);
+    if (t !== null && t !== undefined) obj.modelSolution = t;
+  }
+  if (Array.isArray(obj.solutions)) {
+    obj.solutions = await Promise.all(obj.solutions.map(async sol => {
+      const sObj = typeof sol.toObject === 'function' ? sol.toObject() : { ...sol };
+      if (sObj.solutionTextB2Key && !sObj.solutionText) {
+        const t = await downloadTextFromB2(sObj.solutionTextB2Key);
+        if (t !== null && t !== undefined) sObj.solutionText = t;
+      }
+      return sObj;
+    }));
+  }
+  return obj;
+}
+
+async function hydrateNoteCard(nc) {
+  if (!nc) return nc;
+  const obj = typeof nc.toObject === 'function' ? nc.toObject() : { ...nc };
+  if (obj.contentB2Key && !obj.content) {
+    const t = await downloadTextFromB2(obj.contentB2Key);
+    if (t !== null && t !== undefined) obj.content = t;
+  }
+  if (obj.plainTextB2Key && !obj.plainText) {
+    const t = await downloadTextFromB2(obj.plainTextB2Key);
+    if (t !== null && t !== undefined) obj.plainText = t;
+  }
+  return obj;
+}
+
+async function hydrateFolder(folder) {
+  if (!folder) return folder;
+  const obj = typeof folder.toObject === 'function' ? folder.toObject() : { ...folder };
+  if (Array.isArray(obj.gpes)) {
+    obj.gpes = await Promise.all(obj.gpes.map(hydrateGpe));
+  }
+  if (Array.isArray(obj.noteCards)) {
+    obj.noteCards = await Promise.all(obj.noteCards.map(hydrateNoteCard));
+  }
+  if (obj.notes) {
+    if (obj.notes.contentB2Key && !obj.notes.content) {
+      const t = await downloadTextFromB2(obj.notes.contentB2Key);
+      if (t !== null && t !== undefined) obj.notes.content = t;
+    }
+    if (obj.notes.plainTextB2Key && !obj.notes.plainText) {
+      const t = await downloadTextFromB2(obj.notes.plainTextB2Key);
+      if (t !== null && t !== undefined) obj.notes.plainText = t;
+    }
+  }
+  return obj;
 }
 
 // Helper: upload a buffer to Cloudinary, returns the secure_url
@@ -162,77 +265,11 @@ app.use('/uploads', (req, res, next) => {
 });
 
 // ── MongoDB ───────────────────────────────────────────────────────────────────
-let gfsBucket = null;
-function getGfsBucket() {
-  if (gfsBucket) return gfsBucket;
-  if (mongoose.connection && mongoose.connection.readyState === 1 && mongoose.connection.db) {
-    gfsBucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
-      bucketName: 'solutions'
-    });
-    return gfsBucket;
-  }
-  return null;
-}
-
-function writeBufferToGridFS(filename, buffer, metadata = {}) {
-  return new Promise((resolve, reject) => {
-    const bucket = getGfsBucket();
-    if (!bucket) return reject(new Error('GridFS bucket not available'));
-    const uploadStream = bucket.openUploadStream(filename, {
-      contentType: 'application/pdf',
-      metadata
-    });
-    uploadStream.on('error', reject);
-    uploadStream.on('finish', () => resolve(uploadStream.id));
-    uploadStream.end(buffer);
-  });
-}
-
-async function getGridFSStream(filenameOrId) {
-  const bucket = getGfsBucket();
-  if (!bucket) return null;
-  try {
-    const files = await bucket.find({ filename: filenameOrId }).toArray();
-    if (files && files.length > 0) {
-      return {
-        stream: bucket.openDownloadStreamByName(filenameOrId),
-        file: files[files.length - 1]
-      };
-    }
-    if (mongoose.Types.ObjectId.isValid(filenameOrId)) {
-      const id = new mongoose.Types.ObjectId(filenameOrId);
-      const filesById = await bucket.find({ _id: id }).toArray();
-      if (filesById && filesById.length > 0) {
-        return {
-          stream: bucket.openDownloadStream(id),
-          file: filesById[0]
-        };
-      }
-    }
-  } catch (err) {
-    console.warn('GridFS read check failed:', err.message);
-  }
-  return null;
-}
-
-async function deleteFromGridFS(filenameOrId) {
-  const bucket = getGfsBucket();
-  if (!bucket) return;
-  try {
-    const files = await bucket.find({ filename: filenameOrId }).toArray();
-    for (const f of files) {
-      await bucket.delete(f._id);
-    }
-    if (mongoose.Types.ObjectId.isValid(filenameOrId)) {
-      await bucket.delete(new mongoose.Types.ObjectId(filenameOrId)).catch(() => {});
-    }
-  } catch (err) {
-    console.warn('GridFS delete warning:', err.message);
-  }
-}
+// GridFS has been removed. All binary files are stored in Backblaze B2 or Firebase.
+// MongoDB only stores structured metadata (text, dates, IDs, URLs/keys).
 
 async function syncLocalSolutionsToStorage() {
-  // Sync local PDFs to B2 (preferred) → Firebase → GridFS
+  // Sync local PDFs to B2 (preferred) → Firebase
   if (isB2Ready()) {
     try {
       if (!fs.existsSync(solutionsDir)) return;
@@ -267,29 +304,14 @@ async function syncLocalSolutionsToStorage() {
     return;
   }
 
-  try {
-    const bucket = getGfsBucket();
-    if (!bucket || !fs.existsSync(solutionsDir)) return;
-    const localFiles = fs.readdirSync(solutionsDir).filter(f => f.endsWith('.pdf'));
-    for (const file of localFiles) {
-      const existing = await bucket.find({ filename: file }).limit(1).toArray();
-      if (!existing || existing.length === 0) {
-        const fullPath = path.join(solutionsDir, file);
-        const buf = fs.readFileSync(fullPath);
-        await writeBufferToGridFS(file, buf, { syncedFromDisk: true });
-        console.log(`📦 Synced ${file} to MongoDB GridFS`);
-      }
-    }
-  } catch (syncErr) {
-    console.warn('Sync to GridFS warning:', syncErr.message);
-  }
+  // No GridFS fallback — if no cloud storage is configured, files remain only on local disk.
+  console.warn('⚠️  No cloud storage configured. Local PDF files will not be persisted after restarts.');
 }
 
 mongoose
   .connect(MONGO_URI)
   .then(() => {
     console.log('✅ Connected to MongoDB Atlas: ssb_psych_prep');
-    getGfsBucket();
     syncLocalSolutionsToStorage();
     seedInitialDataIfEmpty();
   })
@@ -410,7 +432,8 @@ app.get('/api/cloudinary-signature', (req, res) => {
 app.get('/api/folders', async (req, res) => {
   try {
     const folders = await DateFolder.find().sort({ dateFolder: -1 });
-    const formatted = folders.map((f) => ({
+    const hydratedFolders = await Promise.all(folders.map(hydrateFolder));
+    const formatted = hydratedFolders.map((f) => ({
       _id: f._id,
       dateFolder: f.dateFolder,
       folderTitle: f.folderTitle,
@@ -456,17 +479,25 @@ app.get('/api/folders', async (req, res) => {
         if (!cUrl && l.publicId && typeof l.publicId === 'string' && l.publicId.startsWith('ssb-psych-prep/')) {
           cUrl = `https://res.cloudinary.com/${CLOUD_NAME || 'bn8zsmom'}/video/upload/${l.publicId.replace(/\.(mp4|webm)$/i, '')}.mp4`;
         }
+        let safeUrl = l.url;
+        if (safeUrl && safeUrl.includes('.backblazeb2.com/')) {
+          safeUrl = l.b2Key ? `/api/media/${l.b2Key.replace(/^\/+/, '')}` : (l.publicId ? `/uploads/${l.publicId}` : safeUrl);
+        }
+        let safeB2Url = l.b2Url;
+        if (safeB2Url && safeB2Url.includes('.backblazeb2.com/')) {
+          safeB2Url = l.b2Key ? `/api/media/${l.b2Key.replace(/^\/+/, '')}` : safeB2Url;
+        }
         return {
           id: l.id || l._id?.toString() || l._id,
           _id: l._id?.toString() || l.id,
           title: l.title,
           duration: l.duration,
-          url: l.url,
+          url: safeUrl,
           publicId: l.publicId,
           cloudinaryUrl: cUrl,
           firebaseUrl: l.firebaseUrl || '',
           b2Key: l.b2Key || '',
-          b2Url: l.b2Url || '',
+          b2Url: safeB2Url || (l.b2Key ? `/api/media/${l.b2Key.replace(/^\/+/, '')}` : ''),
           recordedDate: l.recordedDate || f.dateFolder,
           recordedAt: l.recordedAt
         };
@@ -528,7 +559,8 @@ app.get('/api/folders/:dateFolder', async (req, res) => {
   try {
     const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
     if (!folder) return res.status(404).json({ error: `No folder found for date ${req.params.dateFolder}` });
-    res.json(folder);
+    const hydrated = await hydrateFolder(folder);
+    res.json(hydrated);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -723,25 +755,25 @@ app.get('/api/folders/:dateFolder/notes', async (req, res) => {
     const folder = await DateFolder.findOne({ dateFolder: req.params.dateFolder });
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
 
-    // Auto-migrate legacy note to noteCards if noteCards is empty
-    let noteCards = folder.noteCards || [];
-    if (noteCards.length === 0 && folder.notes?.content && folder.notes.content.trim() && folder.notes.content !== '<p><br></p>') {
+    const hydFolder = await hydrateFolder(folder);
+    let noteCards = hydFolder.noteCards || [];
+    if (noteCards.length === 0 && hydFolder.notes?.content && hydFolder.notes.content.trim() && hydFolder.notes.content !== '<p><br></p>') {
       const legacyCard = {
-        id: 'note-legacy-' + (folder.notes.updatedAt ? new Date(folder.notes.updatedAt).getTime() : Date.now()),
+        id: 'note-legacy-' + (hydFolder.notes.updatedAt ? new Date(hydFolder.notes.updatedAt).getTime() : Date.now()),
         title: 'Initial Practice Note',
-        content: folder.notes.content,
-        plainText: folder.notes.plainText || '',
-        author: folder.notes.author || '',
-        createdAt: folder.notes.updatedAt || new Date(),
-        updatedAt: folder.notes.updatedAt || new Date()
+        content: hydFolder.notes.content,
+        plainText: hydFolder.notes.plainText || '',
+        author: hydFolder.notes.author || '',
+        createdAt: hydFolder.notes.updatedAt || new Date(),
+        updatedAt: hydFolder.notes.updatedAt || new Date()
       };
       folder.noteCards = [legacyCard];
       await folder.save();
-      noteCards = folder.noteCards;
+      noteCards = [legacyCard];
     }
 
     res.json({
-      notes: folder.notes || { content: '', plainText: '', author: '', updatedAt: null },
+      notes: hydFolder.notes || { content: '', plainText: '', author: '', updatedAt: null },
       noteCards: noteCards.map(nc => ({
         id: nc.id,
         title: nc.title || '',
@@ -785,11 +817,22 @@ app.post('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), asyn
 
     if (!folder.noteCards) folder.noteCards = [];
 
+    const noteId = 'note-' + Date.now() + '-' + Math.round(Math.random() * 1e4);
+    let contentB2Key = null;
+    let plainTextB2Key = null;
+
+    if (isB2Ready()) {
+      if (content) contentB2Key = await uploadTextToB2(content, `notes/text/${noteId}-content.html`);
+      if (plainText) plainTextB2Key = await uploadTextToB2(plainText, `notes/text/${noteId}-plain.txt`);
+    }
+
     const newNoteCard = {
-      id: 'note-' + Date.now() + '-' + Math.round(Math.random() * 1e4),
+      id: noteId,
       title: (title || '').trim(),
-      content,
-      plainText: plainText || '',
+      content: contentB2Key ? '' : content,
+      contentB2Key,
+      plainText: plainTextB2Key ? '' : (plainText || ''),
+      plainTextB2Key,
       author: trimmedAuthor,
       createdAt: new Date(),
       updatedAt: new Date()
@@ -799,19 +842,23 @@ app.post('/api/folders/:dateFolder/notes', express.json({ limit: '10mb' }), asyn
 
     // Keep folder.notes updated with latest for backward compatibility
     folder.notes = {
-      content,
-      plainText,
+      content: contentB2Key ? '' : content,
+      contentB2Key,
+      plainText: plainTextB2Key ? '' : (plainText || ''),
+      plainTextB2Key,
       author: trimmedAuthor,
       updatedAt: new Date()
     };
 
     await folder.save();
+    const hydFolder = await hydrateFolder(folder);
+    const hydCard = await hydrateNoteCard(newNoteCard);
     res.json({
       success: true,
       message: 'Note card saved successfully',
-      noteCard: newNoteCard,
-      noteCards: folder.noteCards,
-      notes: folder.notes,
+      noteCard: hydCard,
+      noteCards: hydFolder.noteCards,
+      notes: hydFolder.notes,
       dateFolder
     });
   } catch (err) {
@@ -836,8 +883,26 @@ app.put('/api/folders/:dateFolder/notes/:noteId', express.json({ limit: '10mb' }
 
     const card = folder.noteCards[cardIndex];
     if (title !== undefined) card.title = title.trim();
-    if (content !== undefined) card.content = content;
-    if (plainText !== undefined) card.plainText = plainText;
+    if (content !== undefined) {
+      if (isB2Ready() && content) {
+        if (card.contentB2Key) { deleteFromB2(card.contentB2Key).catch(() => {}); evictB2TextCache(card.contentB2Key); }
+        card.contentB2Key = await uploadTextToB2(content, `notes/text/${card.id}-content.html`);
+        card.content = '';
+      } else {
+        card.content = content;
+        if (card.contentB2Key) { deleteFromB2(card.contentB2Key).catch(() => {}); evictB2TextCache(card.contentB2Key); card.contentB2Key = null; }
+      }
+    }
+    if (plainText !== undefined) {
+      if (isB2Ready() && plainText) {
+        if (card.plainTextB2Key) { deleteFromB2(card.plainTextB2Key).catch(() => {}); evictB2TextCache(card.plainTextB2Key); }
+        card.plainTextB2Key = await uploadTextToB2(plainText, `notes/text/${card.id}-plain.txt`);
+        card.plainText = '';
+      } else {
+        card.plainText = plainText;
+        if (card.plainTextB2Key) { deleteFromB2(card.plainTextB2Key).catch(() => {}); evictB2TextCache(card.plainTextB2Key); card.plainTextB2Key = null; }
+      }
+    }
     if (author) card.author = author.trim();
     card.updatedAt = new Date();
 
@@ -847,19 +912,23 @@ app.put('/api/folders/:dateFolder/notes/:noteId', express.json({ limit: '10mb' }
     if (cardIndex === 0) {
       folder.notes = {
         content: card.content,
+        contentB2Key: card.contentB2Key,
         plainText: card.plainText,
+        plainTextB2Key: card.plainTextB2Key,
         author: card.author,
         updatedAt: card.updatedAt
       };
     }
 
     await folder.save();
+    const hydFolder = await hydrateFolder(folder);
+    const hydCard = await hydrateNoteCard(card);
     res.json({
       success: true,
       message: 'Note card updated successfully',
-      noteCard: card,
-      noteCards: folder.noteCards,
-      notes: folder.notes,
+      noteCard: hydCard,
+      noteCards: hydFolder.noteCards,
+      notes: hydFolder.notes,
       dateFolder
     });
   } catch (err) {
@@ -875,6 +944,11 @@ app.delete('/api/folders/:dateFolder/notes/:noteId', async (req, res) => {
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
 
     if (!folder.noteCards) folder.noteCards = [];
+    const targetCard = folder.noteCards.find(c => c.id === noteId || c._id?.toString() === noteId);
+    if (targetCard) {
+      if (targetCard.contentB2Key) { deleteFromB2(targetCard.contentB2Key).catch(() => {}); evictB2TextCache(targetCard.contentB2Key); }
+      if (targetCard.plainTextB2Key) { deleteFromB2(targetCard.plainTextB2Key).catch(() => {}); evictB2TextCache(targetCard.plainTextB2Key); }
+    }
     folder.noteCards = folder.noteCards.filter(c => c.id !== noteId && c._id?.toString() !== noteId);
 
     // Update folder.notes with latest remaining card or empty
@@ -882,25 +956,30 @@ app.delete('/api/folders/:dateFolder/notes/:noteId', async (req, res) => {
       const latest = folder.noteCards[0];
       folder.notes = {
         content: latest.content,
+        contentB2Key: latest.contentB2Key,
         plainText: latest.plainText,
+        plainTextB2Key: latest.plainTextB2Key,
         author: latest.author,
         updatedAt: latest.updatedAt
       };
     } else {
       folder.notes = {
         content: '',
+        contentB2Key: null,
         plainText: '',
+        plainTextB2Key: null,
         author: '',
         updatedAt: null
       };
     }
 
     await folder.save();
+    const hydFolder = await hydrateFolder(folder);
     res.json({
       success: true,
       message: 'Note card deleted successfully',
-      noteCards: folder.noteCards,
-      notes: folder.notes
+      noteCards: hydFolder.noteCards,
+      notes: hydFolder.notes
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1117,12 +1196,13 @@ app.delete('/api/folders/:dateFolder', async (req, res) => {
         if (sol.localPath) {
           const lp = path.join(solutionsDir, sol.localPath);
           if (fs.existsSync(lp)) fs.unlinkSync(lp);
-          await deleteFromGridFS(sol.localPath);
         }
-        await deleteFromGridFS(`${sol.id}.pdf`);
         deleteFromFirebase(`solutions/${sol.localPath || sol.id + '.pdf'}`).catch(() => {});
         if (sol.b2Key) deleteFromB2(sol.b2Key).catch(() => {});
         else deleteFromB2(`solutions/${sol.localPath || sol.id + '.pdf'}`).catch(() => {});
+        // Also delete B2 text files for GPE-related text stored in B2
+        if (sol.descriptionB2Key) deleteFromB2(sol.descriptionB2Key).catch(() => {});
+        if (sol.modelSolutionB2Key) deleteFromB2(sol.modelSolutionB2Key).catch(() => {});
       }
     }
     if (folder.lecturettes) {
@@ -1258,13 +1338,7 @@ app.post('/api/folders/:dateFolder/solutions',
           console.warn('Firebase upload warning:', fbErr.message);
         }
       } else {
-        // Fallback to MongoDB GridFS only if no cloud storage is configured
-        writeBufferToGridFS(localFilename, req.file.buffer, {
-          solId,
-          dateFolder,
-          originalName: req.file.originalname,
-          size: req.file.size
-        }).catch(gfsErr => console.warn('GridFS save warning:', gfsErr.message));
+        console.warn('⚠️  No cloud storage configured. Solution PDF saved only to local disk.');
       }
 
       const fileProxyUrl = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solId)}/file`;
@@ -1425,37 +1499,8 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
       return res.redirect(solution.firebaseUrl);
     }
 
-    // 3. Check MongoDB GridFS
-    const gfsCandidates = [
-      solution.localPath,
-      `${solution.id}.pdf`,
-      solution.publicId ? solution.publicId.split('/').pop() + '.pdf' : '',
-      solution.publicId,
-      solution.id
-    ].filter(Boolean);
-
-    for (const gfsName of gfsCandidates) {
-      const gfsItem = await getGridFSStream(gfsName);
-      if (gfsItem) {
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Content-Disposition', disposition);
-        if (gfsItem.file && gfsItem.file.length) {
-          res.setHeader('Content-Length', gfsItem.file.length);
-        }
-        res.setHeader('Cache-Control', 'private, max-age=3600');
-
-        // Also cache to local disk asynchronously for subsequent instant hits
-        try {
-          const cacheLocalPath = path.join(solutionsDir, solution.localPath || `${solution.id}.pdf`);
-          const cacheWriter = fs.createWriteStream(cacheLocalPath);
-          const gfsCacheStream = await getGridFSStream(gfsName);
-          if (gfsCacheStream) gfsCacheStream.stream.pipe(cacheWriter);
-        } catch (_) {}
-
-        return gfsItem.stream.pipe(res);
-      }
-    }
+    // 3. PDF not found anywhere — return 404
+    // (GridFS has been removed; files are in B2 / Firebase / local disk only)
 
     // 4. Fallback: If on Cloudinary, fetch page images and reconstruct PDF
     if (cloudinary && solution.publicId && !solution.publicId.endsWith('.pdf')) {
@@ -1476,11 +1521,9 @@ app.get('/api/folders/:dateFolder/solutions/:solutionId/file', async (req, res) 
         solution.localPath = `${solution.id}.pdf`;
         await folder.save();
 
-        // Also cache reconstructed PDF to B2 so it never has to be reconstructed again
+        // Cache reconstructed PDF to B2 so it never has to be reconstructed again
         if (isB2Ready()) {
           uploadBufferToB2(Buffer.from(pdfBytes), `solutions/${solution.id}.pdf`, 'application/pdf').catch(() => {});
-        } else {
-          writeBufferToGridFS(`${solution.id}.pdf`, Buffer.from(pdfBytes)).catch(() => {});
         }
 
         if (download) return res.download(savedPath, filename);
@@ -1568,9 +1611,7 @@ app.put('/api/folders/:dateFolder/solutions/:solutionId',
         if (solution.localPath) {
           const oldLocal = path.join(solutionsDir, solution.localPath);
           if (fs.existsSync(oldLocal)) fs.unlinkSync(oldLocal);
-          await deleteFromGridFS(solution.localPath);
         }
-        await deleteFromGridFS(`${solution.id}.pdf`);
         deleteFromFirebase(`solutions/${solution.localPath || `${solution.id}.pdf`}`).catch(() => {});
         if (solution.b2Key) deleteFromB2(solution.b2Key).catch(() => {});
 
@@ -1597,12 +1638,7 @@ app.put('/api/folders/:dateFolder/solutions/:solutionId',
             console.warn('Firebase upload warning on edit:', fbErr.message);
           }
         } else {
-          writeBufferToGridFS(newLocalName, req.file.buffer, {
-            solId: solution.id,
-            dateFolder,
-            originalName: req.file.originalname,
-            size: req.file.size
-          }).catch(gfsErr => console.warn('GridFS save warning:', gfsErr.message));
+          console.warn('⚠️  No cloud storage configured. Updated solution PDF saved only to local disk.');
         }
 
         solution.url = `/api/folders/${encodeURIComponent(dateFolder)}/solutions/${encodeURIComponent(solution.id)}/file`;
@@ -1655,9 +1691,7 @@ app.delete('/api/folders/:dateFolder/solutions/:solutionId', async (req, res) =>
       if (solution.localPath) {
         const localPath = path.join(solutionsDir, solution.localPath);
         if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
-        await deleteFromGridFS(solution.localPath);
       }
-      await deleteFromGridFS(`${solution.id}.pdf`);
       deleteFromFirebase(`solutions/${solution.localPath || `${solution.id}.pdf`}`).catch(() => {});
       if (solution.b2Key) deleteFromB2(solution.b2Key).catch(() => {});
       else deleteFromB2(`solutions/${solution.localPath || `${solution.id}.pdf`}`).catch(() => {});
@@ -1747,6 +1781,7 @@ app.post('/api/folders/:dateFolder/lecturette',
       if (isB2Ready()) {
         try {
           console.log(`🗂️  Uploading video ${filename} (${(req.file.size / (1024 * 1024)).toFixed(1)} MB) to Backblaze B2...`);
+          const fileBuf = fs.readFileSync(localFilePath);
           const ext = path.extname(filename).toLowerCase();
           const videoMime = {
             '.webm': 'video/webm',
@@ -1755,7 +1790,7 @@ app.post('/api/folders/:dateFolder/lecturette',
           }[ext] || req.file.mimetype || 'video/webm';
           const b2Res = await uploadBufferToB2(fileBuf, `lecturettes/${filename}`, videoMime);
           b2Key = b2Res.key;
-          b2Url = b2Res.publicUrl || getB2PublicUrl(b2Res.key);
+          b2Url = `/api/media/${b2Res.key.replace(/^\/+/, '')}`;
           console.log(`🗂️  Backblaze B2 video upload success: ${b2Res.key}`);
         } catch (b2Err) {
           console.warn(`Backblaze B2 upload warning for ${filename}:`, b2Err.message);
@@ -1769,7 +1804,7 @@ app.post('/api/folders/:dateFolder/lecturette',
         duration: Number(duration) || 0,
         url: finalUrl,
         b2Key,
-        b2Url,
+        b2Url: b2Key ? `/api/media/${b2Key.replace(/^\/+/, '')}` : null,
         publicId: finalPublicId,
         recordedAt: new Date()
       };
@@ -1830,7 +1865,7 @@ app.post('/api/folders/:dateFolder/lecturette',
         })();
       }
 
-      // Fallback: If B2 was not ready, write to Firebase / GridFS in background
+      // Fallback: If B2 was not ready, write to Firebase in background
       if (!isB2Ready() && isFirebaseReady()) {
         (async () => {
           try {
@@ -1855,21 +1890,8 @@ app.post('/api/folders/:dateFolder/lecturette',
             console.warn('Firebase lecturette save warning:', fbErr.message);
           }
         })();
-      } else {
-        (async () => {
-          try {
-            const bucket = getGfsBucket();
-            if (bucket && fs.existsSync(localFilePath)) {
-              const uploadStream = bucket.openUploadStream(filename, {
-                contentType: req.file.mimetype || 'video/webm',
-                metadata: { lecId: newLecId, dateFolder, originalName: req.file.originalname }
-              });
-              fs.createReadStream(localFilePath).pipe(uploadStream);
-            }
-          } catch (gfsErr) {
-            console.warn('GridFS lecturette save warning:', gfsErr.message);
-          }
-        })();
+      } else if (!isB2Ready() && !isFirebaseReady()) {
+        console.warn('⚠️  No cloud storage configured. Lecturette saved only to local disk.');
       }
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -1977,13 +1999,7 @@ app.get('/uploads/lecturette-:file', async (req, res, next) => {
       return fbStream.stream.pipe(res);
     }
   }
-  // 3. Try GridFS
-  const streamData = await getGridFSStream(filename);
-  if (streamData) {
-    res.setHeader('Content-Type', streamData.file?.metadata?.contentType || 'video/webm');
-    return streamData.stream.pipe(res);
-  }
-  // 4. Try Cloudinary redirect from DB (by url or b2Key)
+  // 3. Try Cloudinary redirect from DB (by url or b2Key)
   try {
     const folder = await DateFolder.findOne({ 'lecturettes.url': `/uploads/${filename}` });
     const lec = folder?.lecturettes?.find(l => l.url === `/uploads/${filename}`);
@@ -2346,13 +2362,11 @@ app.delete('/api/folders/:dateFolder/lecturette/:lecturetteId', async (req, res)
     const lecturette = folder.lecturettes?.find(l => l.id === lecturetteId || l._id?.toString() === lecturetteId);
     if (lecturette) {
       await deleteStoredFile(lecturette.url, lecturette.publicId, 'video');
-      await deleteFromGridFS(lecturette.publicId).catch(() => {});
       deleteFromFirebase(`lecturettes/${lecturette.publicId}`).catch(() => {});
       if (lecturette.b2Key) deleteFromB2(lecturette.b2Key).catch(() => {});
       else deleteFromB2(`lecturettes/${lecturette.publicId}`).catch(() => {});
       const localName = path.basename((lecturette.url || '').split('?')[0]);
       if (localName) {
-        await deleteFromGridFS(localName).catch(() => {});
         deleteFromFirebase(`lecturettes/${localName}`).catch(() => {});
         deleteFromB2(`lecturettes/${localName}`).catch(() => {});
         const localPath = path.join(uploadsDir, localName);
@@ -2389,10 +2403,8 @@ app.delete('/api/lecturettes/:lecturetteId', async (req, res) => {
     const lecturette = folder.lecturettes?.find(l => l.id === lecturetteId || l._id?.toString() === lecturetteId);
     if (lecturette) {
       await deleteStoredFile(lecturette.url, lecturette.publicId, 'video');
-      await deleteFromGridFS(lecturette.publicId).catch(() => {});
       const localName = path.basename((lecturette.url || '').split('?')[0]);
       if (localName) {
-        await deleteFromGridFS(localName).catch(() => {});
         const localPath = path.join(uploadsDir, localName);
         if (fs.existsSync(localPath)) {
           try { fs.unlinkSync(localPath); } catch (e) {}
@@ -2480,8 +2492,9 @@ app.get('/api/gpes', async (req, res) => {
   try {
     const folders = await DateFolder.find({ 'gpes.0': { $exists: true } }).sort({ dateFolder: -1 });
     const allGpes = [];
-    folders.forEach(f => {
-      (f.gpes || []).forEach(g => {
+    for (const f of folders) {
+      const hydratedGpes = await Promise.all((f.gpes || []).map(hydrateGpe));
+      hydratedGpes.forEach(g => {
         allGpes.push({
           id: g.id,
           dateFolder: f.dateFolder,
@@ -2499,7 +2512,7 @@ app.get('/api/gpes', async (req, res) => {
           updatedAt: g.updatedAt
         });
       });
-    });
+    }
     res.json(allGpes);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2512,7 +2525,8 @@ app.get('/api/folders/:dateFolder/gpes', async (req, res) => {
     const { dateFolder } = req.params;
     const folder = await DateFolder.findOne({ dateFolder });
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
-    res.json(folder.gpes || []);
+    const hydratedGpes = await Promise.all((folder.gpes || []).map(hydrateGpe));
+    res.json(hydratedGpes);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2621,20 +2635,39 @@ app.post('/api/folders/:dateFolder/gpes', (req, res, next) => {
       }
     }
 
+    const gpeId = 'gpe-' + Date.now();
+    const descriptionText = (description || '').trim();
+    const modelSolutionText = (modelSolution || '').trim();
+
+    // Upload text fields to B2 to keep MongoDB document lean
+    let descriptionB2Key = null;
+    let modelSolutionB2Key = null;
+    if (isB2Ready()) {
+      if (descriptionText) {
+        descriptionB2Key = await uploadTextToB2(descriptionText, `gpe/text/${gpeId}-description.txt`);
+      }
+      if (modelSolutionText) {
+        modelSolutionB2Key = await uploadTextToB2(modelSolutionText, `gpe/text/${gpeId}-model-solution.txt`);
+      }
+    }
+
     const newGpe = {
-      id: 'gpe-' + Date.now(),
+      id: gpeId,
       title: (title || `GPE Exercise ${dateFolder}`).trim(),
       mapUrl,
       mapPublicId,
       mapB2Key,
       originalMapName,
-      description: (description || '').trim(),
+      // Store description/modelSolution in MongoDB only if B2 is not available
+      description: descriptionB2Key ? '' : descriptionText,
+      descriptionB2Key,
       narrativeImageUrl,
       narrativePublicId,
       narrativeB2Key,
       narrativeOriginalName,
       scale: (scale || '1 cm = 2 km').trim(),
-      modelSolution: (modelSolution || '').trim(),
+      modelSolution: modelSolutionB2Key ? '' : modelSolutionText,
+      modelSolutionB2Key,
       solutions: [],
       createdAt: new Date(),
       updatedAt: new Date()
@@ -2644,7 +2677,9 @@ app.post('/api/folders/:dateFolder/gpes', (req, res, next) => {
     folder.gpes.unshift(newGpe);
     await folder.save();
 
-    res.json({ success: true, message: 'GPE exercise uploaded successfully', gpe: newGpe, folder });
+    // Return the full text in the response (not the empty MongoDB field)
+    const responseGpe = { ...newGpe, description: descriptionText, modelSolution: modelSolutionText };
+    res.json({ success: true, message: 'GPE exercise uploaded successfully', gpe: responseGpe, folder });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2668,9 +2703,29 @@ app.put('/api/folders/:dateFolder/gpes/:gpeId', (req, res, next) => {
     if (!gpe) return res.status(404).json({ error: 'GPE exercise not found' });
 
     if (title !== undefined) gpe.title = title.trim();
-    if (description !== undefined) gpe.description = description.trim();
+    if (description !== undefined) {
+      const newDesc = description.trim();
+      if (isB2Ready() && newDesc) {
+        if (gpe.descriptionB2Key) deleteFromB2(gpe.descriptionB2Key).catch(() => {});
+        gpe.descriptionB2Key = await uploadTextToB2(newDesc, `gpe/text/${gpe.id}-description.txt`);
+        gpe.description = '';
+      } else {
+        gpe.description = newDesc;
+        if (gpe.descriptionB2Key) { deleteFromB2(gpe.descriptionB2Key).catch(() => {}); gpe.descriptionB2Key = null; }
+      }
+    }
     if (scale !== undefined) gpe.scale = scale.trim();
-    if (modelSolution !== undefined) gpe.modelSolution = modelSolution.trim();
+    if (modelSolution !== undefined) {
+      const newMS = modelSolution.trim();
+      if (isB2Ready() && newMS) {
+        if (gpe.modelSolutionB2Key) deleteFromB2(gpe.modelSolutionB2Key).catch(() => {});
+        gpe.modelSolutionB2Key = await uploadTextToB2(newMS, `gpe/text/${gpe.id}-model-solution.txt`);
+        gpe.modelSolution = '';
+      } else {
+        gpe.modelSolution = newMS;
+        if (gpe.modelSolutionB2Key) { deleteFromB2(gpe.modelSolutionB2Key).catch(() => {}); gpe.modelSolutionB2Key = null; }
+      }
+    }
 
     if (req.file) {
       await deleteStoredFile(gpe.mapUrl, gpe.mapPublicId, 'image');
@@ -2688,11 +2743,19 @@ app.put('/api/folders/:dateFolder/gpes/:gpeId', (req, res, next) => {
         const ext = path.extname(req.file.originalname) || '.jpg';
         const filename = 'gpe-map-' + uniqueSuffix + ext;
         fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
+        // Also upload to B2 if ready
+        if (isB2Ready()) {
+          try {
+            const b2Res = await uploadBufferToB2(req.file.buffer, `gpe/maps/${filename}`, req.file.mimetype || 'image/jpeg');
+            gpe.mapB2Key = b2Res.key;
+          } catch (b2Err) { console.warn('B2 GPE map update warning:', b2Err.message); }
+        }
         gpe.mapUrl = `/uploads/${filename}`;
         gpe.mapPublicId = filename;
       }
       gpe.originalMapName = req.file.originalname;
     }
+
 
     gpe.updatedAt = new Date();
     folder.markModified('gpes');
@@ -2717,15 +2780,36 @@ app.patch('/api/folders/:dateFolder/gpes/:gpeId', async (req, res) => {
     if (!gpe) return res.status(404).json({ error: 'GPE exercise not found' });
 
     if (title !== undefined) gpe.title = title.trim();
-    if (description !== undefined) gpe.description = description.trim();
+    if (description !== undefined) {
+      const newDesc = description.trim();
+      if (isB2Ready() && newDesc) {
+        if (gpe.descriptionB2Key) { deleteFromB2(gpe.descriptionB2Key).catch(() => {}); evictB2TextCache(gpe.descriptionB2Key); }
+        gpe.descriptionB2Key = await uploadTextToB2(newDesc, `gpe/text/${gpe.id}-description.txt`);
+        gpe.description = '';
+      } else {
+        gpe.description = newDesc;
+        if (gpe.descriptionB2Key) { deleteFromB2(gpe.descriptionB2Key).catch(() => {}); evictB2TextCache(gpe.descriptionB2Key); gpe.descriptionB2Key = null; }
+      }
+    }
     if (scale !== undefined) gpe.scale = scale.trim();
-    if (modelSolution !== undefined) gpe.modelSolution = modelSolution.trim();
+    if (modelSolution !== undefined) {
+      const newMS = modelSolution.trim();
+      if (isB2Ready() && newMS) {
+        if (gpe.modelSolutionB2Key) { deleteFromB2(gpe.modelSolutionB2Key).catch(() => {}); evictB2TextCache(gpe.modelSolutionB2Key); }
+        gpe.modelSolutionB2Key = await uploadTextToB2(newMS, `gpe/text/${gpe.id}-model-solution.txt`);
+        gpe.modelSolution = '';
+      } else {
+        gpe.modelSolution = newMS;
+        if (gpe.modelSolutionB2Key) { deleteFromB2(gpe.modelSolutionB2Key).catch(() => {}); evictB2TextCache(gpe.modelSolutionB2Key); gpe.modelSolutionB2Key = null; }
+      }
+    }
 
     gpe.updatedAt = new Date();
     folder.markModified('gpes');
     await folder.save();
 
-    res.json({ success: true, gpe });
+    const hydrated = await hydrateGpe(gpe);
+    res.json({ success: true, gpe: hydrated });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2741,14 +2825,17 @@ app.delete('/api/folders/:dateFolder/gpes/:gpeId', async (req, res) => {
     const gpe = folder.gpes?.find(g => g.id === gpeId || g._id?.toString() === gpeId);
     if (gpe) {
       await deleteStoredFile(gpe.mapUrl, gpe.mapPublicId, 'image');
-      if (gpe.narrativeImageUrl) {
-        await deleteStoredFile(gpe.narrativeImageUrl, gpe.narrativePublicId, 'image');
-      }
+      if (gpe.mapB2Key) deleteFromB2(gpe.mapB2Key).catch(() => {});
+      if (gpe.narrativeImageUrl) await deleteStoredFile(gpe.narrativeImageUrl, gpe.narrativePublicId, 'image');
+      if (gpe.narrativeB2Key) deleteFromB2(gpe.narrativeB2Key).catch(() => {});
+      // Delete B2 text files
+      if (gpe.descriptionB2Key) deleteFromB2(gpe.descriptionB2Key).catch(() => {});
+      if (gpe.modelSolutionB2Key) deleteFromB2(gpe.modelSolutionB2Key).catch(() => {});
       if (gpe.solutions) {
         for (const sol of gpe.solutions) {
-          if (sol.solutionImageUrl) {
-            await deleteStoredFile(sol.solutionImageUrl, sol.solutionPublicId, 'image');
-          }
+          if (sol.solutionImageUrl) await deleteStoredFile(sol.solutionImageUrl, sol.solutionPublicId, 'image');
+          if (sol.solutionB2Key) deleteFromB2(sol.solutionB2Key).catch(() => {});
+          if (sol.solutionTextB2Key) deleteFromB2(sol.solutionTextB2Key).catch(() => {});
         }
       }
       folder.gpes = folder.gpes.filter(g => g.id !== gpeId && g._id?.toString() !== gpeId);
@@ -2814,10 +2901,21 @@ app.post('/api/folders/:dateFolder/gpes/:gpeId/solutions', (req, res, next) => {
       }
     }
 
+    const gpeSolId = 'gpe-sol-' + Date.now();
+    const solutionTextRaw = (solutionText || '').trim();
+
+    // Upload solutionText to B2 to keep MongoDB document lean
+    let solutionTextB2Key = null;
+    if (isB2Ready() && solutionTextRaw) {
+      solutionTextB2Key = await uploadTextToB2(solutionTextRaw, `gpe/text/${gpeSolId}-solution-text.txt`);
+    }
+
     const newSolution = {
-      id: 'gpe-sol-' + Date.now(),
+      id: gpeSolId,
       author: (author || 'Candidate').trim(),
-      solutionText: (solutionText || '').trim(),
+      // Store solutionText in MongoDB only if B2 is not available
+      solutionText: solutionTextB2Key ? '' : solutionTextRaw,
+      solutionTextB2Key,
       solutionImageUrl,
       solutionPublicId,
       solutionB2Key,
@@ -2830,7 +2928,9 @@ app.post('/api/folders/:dateFolder/gpes/:gpeId/solutions', (req, res, next) => {
     folder.markModified('gpes');
     await folder.save();
 
-    res.json({ success: true, message: 'Solution photo uploaded and saved successfully', solution: newSolution, gpe });
+    // Return full text in the response
+    const responseSolution = { ...newSolution, solutionText: solutionTextRaw };
+    res.json({ success: true, message: 'Solution photo uploaded and saved successfully', solution: responseSolution, gpe });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2847,8 +2947,10 @@ app.delete('/api/folders/:dateFolder/gpes/:gpeId/solutions/:solutionId', async (
     if (!gpe) return res.status(404).json({ error: 'GPE exercise not found' });
 
     const sol = gpe.solutions?.find(s => s.id === solutionId || s._id?.toString() === solutionId);
-    if (sol && sol.solutionImageUrl) {
-      await deleteStoredFile(sol.solutionImageUrl, sol.solutionPublicId, 'image');
+    if (sol) {
+      if (sol.solutionImageUrl) await deleteStoredFile(sol.solutionImageUrl, sol.solutionPublicId, 'image');
+      if (sol.solutionB2Key) deleteFromB2(sol.solutionB2Key).catch(() => {});
+      if (sol.solutionTextB2Key) deleteFromB2(sol.solutionTextB2Key).catch(() => {});
     }
 
     gpe.solutions = (gpe.solutions || []).filter(s => s.id !== solutionId && s._id?.toString() !== solutionId);

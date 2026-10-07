@@ -163,6 +163,12 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
     const v = videoRef.current;
     if (!v) return;
     if (v.paused || v.ended) {
+      // If ended or near the end, smoothly rewind to 0 for replay
+      const maxD = (duration && !isNaN(duration) && duration !== Infinity && duration > 0) ? duration : (fallbackDuration || 0);
+      if (v.ended || (maxD > 1 && v.currentTime >= maxD - 0.25)) {
+        v.currentTime = 0;
+        setCurrentTime(0);
+      }
       v.play().then(() => setIsPlaying(true)).catch((err) => {
         console.warn('Playback error:', err);
       });
@@ -288,19 +294,6 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
       setDuration(v.duration);
     } else if (fallbackDuration > 0) {
       setDuration(fallbackDuration);
-    } else if (src && src.startsWith('blob:')) {
-      // Workaround for MediaRecorder WebM duration Infinity bug in Chromium
-      // ONLY apply this if duration is still Infinity or unknown and fallbackDuration is not available!
-      if (!v.duration || isNaN(v.duration) || v.duration === Infinity) {
-        v.currentTime = 1e101;
-        v.ontimeupdate = () => {
-          v.ontimeupdate = null;
-          v.currentTime = 0;
-          if (v.duration && !isNaN(v.duration) && v.duration !== Infinity) {
-            setDuration(v.duration);
-          }
-        };
-      }
     }
     if (autoPlay) {
       v.play().then(() => setIsPlaying(true)).catch(() => {});
@@ -350,6 +343,8 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
     setCurrentTime(v.currentTime);
     if (v.duration && !isNaN(v.duration) && v.duration !== Infinity && v.duration > 0) {
       setDuration(v.duration);
+    } else if (fallbackDuration > 0 && (!duration || isNaN(duration) || duration === Infinity)) {
+      setDuration(fallbackDuration);
     }
   };
 
@@ -366,17 +361,28 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
     if (!v) return;
     isSeeking.current = true;
     setCurrentTime(target); // update UI immediately
-    v.currentTime = target; // request seek
-    // onSeeked will clear isSeeking.current and confirm actual time
+    try {
+      v.currentTime = target;
+    } catch (err) {}
+    setTimeout(() => {
+      isSeeking.current = false;
+    }, 250);
   };
 
   const handleSkip = (seconds) => {
     const v = videoRef.current;
     if (!v) return;
-    const maxD = duration || fallbackDuration || 1000;
+    const maxD = Math.max(
+      (duration && !isNaN(duration) && duration !== Infinity && duration > 0) ? duration : 0,
+      fallbackDuration || 0,
+      v.currentTime || 0,
+      1
+    );
     const newTime = Math.min(Math.max(0, v.currentTime + seconds), maxD);
-    v.currentTime = newTime;
-    setCurrentTime(newTime);
+    try {
+      v.currentTime = newTime;
+      setCurrentTime(newTime);
+    } catch (err) {}
   };
 
   const handleVolumeChange = (e) => {
@@ -481,10 +487,13 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
   };
 
   // For the seek bar: use actual duration when available; for Infinity-duration blobs
-  // use the furthest time the video has played so the bar stays meaningful.
-  const maxVal = (duration && !isNaN(duration) && duration !== Infinity && duration > 0)
-    ? duration
-    : (fallbackDuration > 0 ? fallbackDuration : (currentTime > 0 ? currentTime * 1.05 : 0));
+  // use Math.max of duration, fallbackDuration, and currentTime so the bar stays accurate and scrubbable.
+  const maxVal = Math.max(
+    (duration && !isNaN(duration) && duration !== Infinity && duration > 0) ? duration : 0,
+    fallbackDuration > 0 ? fallbackDuration : 0,
+    currentTime > 0 ? currentTime : 0,
+    1
+  );
 
   const handleKeyDown = (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -529,7 +538,11 @@ export default function CustomVideoPlayer({ src, fallbackSources = [], fallbackD
         onPlaying={() => { setIsBuffering(false); setIsPlaying(true); }}
         onTimeUpdate={handleTimeUpdate}
         onSeeked={handleSeeked}
-        onEnded={() => setIsPlaying(false)}
+        onEnded={() => {
+          setIsPlaying(false);
+          const v = videoRef.current;
+          if (v) setCurrentTime(maxVal);
+        }}
         onError={handleVideoError}
         className={`w-full h-full object-contain ${hasError ? 'hidden' : 'block'}`}
       />

@@ -178,9 +178,17 @@ const NoteCardSchema = new mongoose.Schema({
   },
   content: {
     type: String,
-    required: true
+    default: ''
+  },
+  contentB2Key: {
+    type: String,
+    default: ''
   },
   plainText: {
+    type: String,
+    default: ''
+  },
+  plainTextB2Key: {
     type: String,
     default: ''
   },
@@ -208,6 +216,10 @@ const GpeSolutionSchema = new mongoose.Schema({
     default: 'Candidate'
   },
   solutionText: {
+    type: String,
+    default: ''
+  },
+  solutionTextB2Key: {
     type: String,
     default: ''
   },
@@ -262,6 +274,10 @@ const GpeSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  descriptionB2Key: {
+    type: String,
+    default: ''
+  },
   narrativeImageUrl: {
     type: String,
     default: ''
@@ -283,6 +299,10 @@ const GpeSchema = new mongoose.Schema({
     default: '1 cm = 2 km'
   },
   modelSolution: {
+    type: String,
+    default: ''
+  },
+  modelSolutionB2Key: {
     type: String,
     default: ''
   },
@@ -348,7 +368,15 @@ const DateFolderSchema = new mongoose.Schema(
         type: String,
         default: ''
       },
+      contentB2Key: {
+        type: String,
+        default: ''
+      },
       plainText: {
+        type: String,
+        default: ''
+      },
+      plainTextB2Key: {
         type: String,
         default: ''
       },
